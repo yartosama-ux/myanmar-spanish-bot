@@ -1,10 +1,10 @@
 import logging
 import os
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from google import genai
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
 GEMINI_API_KEY = "AQ.Ab8RN6IhM-LOFIa63B_t8LbRImEi73l05GxN5ngtcVojLSgLMQ"
@@ -14,21 +14,26 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-# Gemini Client တည်ဆောက်ခြင်း
-client = genai.Client(api_key=GEMINI_API_KEY)
-
 def ai_translate(text, target_instruction):
-    """Gemini 2.5 Flash ကို သုံး၍ အလွန်တိကျစွာ ဘာသာပြန်ခြင်း"""
+    """Gemini REST API ကို အသုံးပြု၍ တိကျစွာ ဘာသာပြန်ခြင်း"""
     try:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
         prompt = f"{target_instruction}\nText to translate: {text}"
-        response = client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=prompt,
-        )
-        if response and response.text:
-            return response.text.strip()
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
+        response = requests.post(url, json=payload, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            translated = data["candidates"][0]["content"]["parts"][0]["text"]
+            if translated:
+                return translated.strip()
+        else:
+            logging.error(f"Gemini API Error: {response.text}")
     except Exception as e:
-        logging.error(f"Gemini API Error: {e}")
+        logging.error(f"Gemini API Exception: {e}")
     return text
 
 def apply_venezuelan_manager_style(spanish_text):
@@ -48,7 +53,7 @@ def apply_venezuelan_manager_style(spanish_text):
         "hola": "estimado/a, un cordial saludo",
         "Hola": "Estimado/a, un cordial saludo",
         "gracias": "muchas gracias por su atención y apoyo",
-        "Gracias": "Muchas gracias por su atención و apoyo",
+        "Gracias": "Muchas gracias por su atención y apoyo",
     }
     
     formatted_text = spanish_text
@@ -93,7 +98,7 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
-                f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
+                f"🇲🇲 *မြන්မာဘာသာပြန်:*\n{myanmar_trans}"
             )
             
         await update.message.reply_text(final_result, parse_mode='Markdown')
