@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
-OPENAI_API_KEY = "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"
+OPENAI_API_KEY = "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"
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -21,7 +21,7 @@ def openai_translate(text, system_prompt):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "gpt-3.5-turbo",  # ပိုမိုကျယ်ပြန့်စွာ အလုပ်လုပ်သော Model သို့ ပြောင်းထားပါသည်
+        "model": "gpt-3.5-turbo",
         "messages": [
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": text}
