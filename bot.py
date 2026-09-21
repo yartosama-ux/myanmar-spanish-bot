@@ -7,7 +7,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
-OPENAI_API_KEY = "DoLwwyD1RU6kg_0ohhEERiwopRrdUA"  # Render ထဲက သင့်ရဲ့ Key အစစ်
+OPENAI_API_KEY = "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"  # Render ထဲက သင့်ရဲ့ Key အစစ်
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
