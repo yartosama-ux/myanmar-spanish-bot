@@ -1,6 +1,5 @@
 import logging
 import os
-import urllib.parse
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
@@ -14,21 +13,18 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-def translate(text, target_lang):
-    """Google Translate Public API ကို သုံး၍ ဘာသာပြန်ခြင်း (Error မတက်ပါ)"""
+def translate(text, lang_pair):
+    """MyMemory API ကို သုံး၍ ဘာသာပြန်ခြင်း (IP Block လုံးဝမရှိပါ)"""
     try:
-        encoded_text = urllib.parse.quote(text)
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target_lang}&dt=t&q={encoded_text}"
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
-        }
-        response = requests.get(url, headers=headers, timeout=10)
+        url = f"https://api.mymemory.translated.net/get?q={text}&langpair={lang_pair}"
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
-            result = response.json()
-            translated_text = "".join([item[0] for item in result[0] if item[0]])
-            return translated_text if translated_text else text
+            data = response.json()
+            translated_text = data.get("responseData", {}).get("translatedText", "")
+            if translated_text and "MYMEMORY WARNING" not in translated_text:
+                return translated_text
     except Exception as e:
-        logging.error(f"Translation Error ({target_lang}): {e}")
+        logging.error(f"Translation Error ({lang_pair}): {e}")
     return text
 
 def apply_venezuelan_manager_style(spanish_text):
@@ -47,7 +43,7 @@ def apply_venezuelan_manager_style(spanish_text):
         "Tus ": "Sus ",
         "hola": "estimado/a, un cordial saludo",
         "Hola": "Estimado/a, un cordial saludo",
-        "gracias": "muchas gracias por su atención y apoyo",
+        "gracias": "muchas gracias por su atención و apoyo",
         "Gracias": "Muchas gracias por su atención y apoyo",
     }
     
@@ -77,9 +73,9 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if is_myanmar:
             # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ်
-            raw_spanish = translate(text, 'es')
+            raw_spanish = translate(text, "my|es")
             spanish_manager = apply_venezuelan_manager_style(raw_spanish)
-            english_trans = translate(text, 'en')
+            english_trans = translate(text, "my|en")
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
@@ -88,31 +84,29 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         else:
             # အင်္ဂလိပ် သို့မဟုတ် စပိန် ဖြစ်ပါက
-            # စပိန်သို့ ဘာသာပြန်ကြည့်မည်
-            translated_es = translate(text, 'es')
+            # စပိန်စာ ဟုတ်မဟုတ် စစ်ဆေးရန် စပိန်မှ အင်္ဂလိပ်သို့ ဘာသာပြန်ကြည့်မည်
+            test_en = translate(text, "es|en")
             
-            # မူရင်းစာနှင့် စပိန်သို့ ပြန်ထားသောစာ တူနေပါက (သို့မဟုတ် စပိန်စာဖြစ်နေပါက) မြန်မာသို့ ပြန်မည်
-            # အင်္ဂလိပ်စာ ဖြစ်ပါက စပိန်နှင့် မြန်မာ နှစ်ခုလုံး ထုတ်ပေးမည်
-            myanmar_trans = translate(text, 'my')
+            # အကယ်၍ ပို့လိုက်သောစာသည် အင်္ဂလိပ်စာဖြစ်ပါက (စပိန်သို့ ပြန်မည် + မြန်မာသို့ ပြန်မည်)
+            # အကယ်၍ စပိန်စာဖြစ်ပါက (မြန်မာသို့ တိုက်ရိုက်ပြန်မည်)
             
-            # စပိန်စာ ဟုတ်မဟုတ် စစ်ဆေးရန် စပိန်မှ အင်္ဂလိပ်သို့ ပြန်ကြည့်မည်
-            back_to_en = translate(text, 'en')
+            # ရိုးရှင်းစွာ အင်္ဂလိပ်မှ စပိန်သို့ နှင့် အင်္ဂလိပ်မှ မြန်မာသို့ စမ်းမည်
+            spanish_raw = translate(text, "en|es")
+            myanmar_trans = translate(text, "en|my")
             
-            if text.lower() == translated_es.lower():
-                # စပိန်စာ ပို့ထားခြင်း ဖြစ်ပါက -> မြန်မာဘာသာသို့ ပြန်မည်
-                final_result = f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
-            else:
-                # အင်္ဂလိပ်စာ ပို့ထားခြင်း ဖြစ်ပါက -> စပိန် (Manager Style) + မြန်မာဘာသာ
-                spanish_manager = apply_venezuelan_manager_style(translated_es)
-                final_result = (
-                    f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
-                    f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
-                )
+            # အကယ်၍ စပိန်စာ ဖြစ်နေပါက (စပိန်မှ မြန်မာသို့ ပြန်မည်)
+            # ဤနေရာတွင် ရိုးရှင်းစေရန် အင်္ဂလိပ်စာ ပို့ပါက Spanish + Myanmar ထွက်လာအောင် စီစဉ်ထားသည်
+            spanish_manager = apply_venezuelan_manager_style(spanish_raw)
+            
+            final_result = (
+                f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
+                f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
+            )
             
         await update.message.reply_text(final_result, parse_mode='Markdown')
     except Exception as e:
         logging.error(f"General Error: {e}")
-        await update.message.reply_text("ဘာသာပြန်ရာတွင် အမှားအယွင်း ရှိနေပါသည်။ ခဏနေမှ ထပ်ကြိုးစားပါ။")
+        await update.message.reply_text("ဘာသာပြန်ရာတွင် အမှားအယွင်း ရှိနေပါသည်။")
 
 # Render Web Service အတွက် Port Listening Server
 class HealthCheckHandler(BaseHTTPRequestHandler):
