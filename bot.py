@@ -7,7 +7,7 @@ from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, fil
 from google import genai
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
-GEMINI_API_KEY = "YOUR_GEMINI_API_KEY_HERE"  # <--- ဒီနေရာမှာ သင့်ရဲ့ Gemini API Key ထည့်ပါ
+GEMINI_API_KEY = "AQ.Ab8RN6IBDmdlAHhVzqZUWA4OCyVpfEv2LIhe4AL2uiSGHw20sQ"  # <--- ဒီနေရာမှာ သင့်ရဲ့ Gemini API Key ထည့်ပါ
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
