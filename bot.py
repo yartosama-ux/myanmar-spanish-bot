@@ -1,39 +1,48 @@
 import logging
 import os
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from openai import OpenAI
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
-OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY") # Render Environment Variable မှ ယူပါမည်
+OPENAI_API_KEY = "DoLwwyD1RU6kg_0ohhEERiwopRrdUA"  # Render ထဲက သင့်ရဲ့ Key အစစ်
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-client = OpenAI(api_key=OPENAI_API_KEY)
-
-def ai_translate(text, target_instruction):
-    """OpenAI GPT ကို အသုံးပြု၍ တိကျစွာ ဘာသာပြန်ခြင်း"""
+def openai_translate(text, system_prompt):
+    """OpenAI API ကို requests ဖြင့် တိုက်ရိုက်နှင့် အမှားအယွင်းမရှိ ခေါ်ယူခြင်း"""
+    url = "https://api.openai.com/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {OPENAI_API_KEY}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "gpt-4o-mini",
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": text}
+        ],
+        "temperature": 0.3
+    }
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",  # မြန်ဆန်ပြီး တိကျသော Model
-            messages=[
-                {"role": "system", "content": target_instruction},
-                {"role": "user", "content": text}
-            ]
-        )
-        return response.choices[0].message.content.strip()
+        response = requests.post(url, json=payload, headers=headers, timeout=15)
+        if response.status_code == 200:
+            data = response.json()
+            return data["choices"][0]["message"]["content"].strip()
+        else:
+            logging.error(f"OpenAI API Error Status {response.status_code}: {response.text}")
     except Exception as e:
-        logging.error(f"OpenAI API Error: {e}")
-    return text
+        logging.error(f"OpenAI Exception: {e}")
+    return text  # Error ဖြစ်မှသာ မူရင်းစာသားကို ပြန်ပေးမည်
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "မင်္ဂလာပါ။ Manager-Style Translate Bot (OpenAI Version) မှ ကြိုဆိုပါတယ်။\n\n"
+        "မင်္ဂလာပါ။ Manager-Style Translate Bot (OpenAI Fixed Version) မှ ကြိုဆိုပါတယ်။\n\n"
         "- **မြန်မာစာ** ပို့ပါက -> စပိန် (Venezuela Manager Style) နှင့် အင်္ဂလိပ် ဘာသာပြန်ပေးပါမည်။\n"
         "- **အင်္ဂလိပ်/စပိန်စာ** ပို့ပါက -> စပိန် (Venezuela Manager Style) နှင့် မြန်မာဘာသာ ပြန်ပေးပါမည်။",
         parse_mode='Markdown'
@@ -46,22 +55,19 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     try:
         # မြန်မာစာ Unicode Range (\u1000-\u109F) ပါဝင်မှု စစ်ဆေးခြင်း
-        is_myanmar = any('\u1000' <= char <= '\u109f' for char in text)
+        is_myanmar = any('\u1000' <= char <= \u109f' for char in text)
         
         if is_myanmar:
-            # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ်
-            spanish_manager = ai_translate(text, "Translate this text into polite professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
-            english_trans = ai_translate(text, "Translate this text into professional English. Return ONLY the translated text.")
+            spanish_manager = openai_translate(text, "Translate this text into polite, professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
+            english_trans = openai_translate(text, "Translate this text into professional English. Return ONLY the translated text.")
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
                 f"🇬🇧 *English (Professional):*\n{english_trans}"
             )
-            
         else:
-            # အင်္ဂလိပ် သို့မဟုတ် အခြားဘာသာ ဖြစ်ပါက -> စပိန် (Manager Style) + မြန်မာဘာသာ
-            spanish_manager = ai_translate(text, "Translate this text into polite professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
-            myanmar_trans = ai_translate(text, "Translate this text into natural, clear Myanmar (Burmese) language. Return ONLY the translated text.")
+            spanish_manager = openai_translate(text, "Translate this text into polite, professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
+            myanmar_trans = openai_translate(text, "Translate this text into natural, clear Myanmar (Burmese) language. Return ONLY the translated text.")
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
