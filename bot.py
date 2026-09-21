@@ -16,10 +16,11 @@ logging.basicConfig(
 def safe_translate(text, target_lang):
     """deep-translator သုံးပြီး ဘာသာပြန်ပေးသည့် Function"""
     try:
-        return GoogleTranslator(source='auto', target=target_lang).translate(text)
+        res = GoogleTranslator(source='auto', target=target_lang).translate(text)
+        return res if res else text
     except Exception as e:
         logging.error(f"Translation Error for {target_lang}: {e}")
-        return None
+        return text
 
 def apply_venezuelan_manager_style(spanish_text):
     """Venezuela မန်နေဂျာ/ရုံးသုံး Professional (Usted) စတိုင်သို့ ပြောင်းလဲပေးသည့် Logic"""
@@ -52,7 +53,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "မင်္ဂလာပါ။ Manager-Style Translate Bot မှ ကြိုဆိုပါတယ်။\n\n"
         "- **မြန်မာစာ** ပို့ပါက -> စပိန် (Manager Style) နှင့် အင်္ဂလိပ် ဘာသာပြန်ပေးပါမည်။\n"
         "- **စပိန်စာ** ပို့ပါက -> မြန်မာဘာသာသို့ တိကျစွာ ပြန်ပေးပါမည်။\n"
-        "- **အင်္ဂလိပ်စာ** ပို့ပါက -> စပိန် (Manager Style) နှင့် မြန်မာဘာသာ ပြန်ပေးပါမည်။"
+        "- **အင်္ဂလိပ်စာ** ပို့ပါက -> စပိန် (Manager Style) နှင့် မြန်မာဘာသာ ပြန်ပေးပါမည်။",
+        parse_mode='Markdown'
     )
 
 async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -63,14 +65,14 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_myanmar = any('\u1000' <= char <= '\u109f' for char in text)
         
         if is_myanmar:
-            # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ် ရုံးသုံး
+            # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ်
             raw_spanish = safe_translate(text, 'es')
             spanish_manager = apply_venezuelan_manager_style(raw_spanish)
             english_trans = safe_translate(text, 'en')
             
             final_result = (
-                f"🇪🇸 **Spanish (Venezuela Manager Style):**\n{spanish_manager}\n\n"
-                f"🇬🇧 **English (Professional):**\n{english_trans}"
+                f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
+                f"🇬🇧 *English (Professional):*\n{english_trans}"
             )
             
         else:
@@ -78,21 +80,21 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             translated_es = safe_translate(text, 'es')
             
             # မူရင်းစာနှင့် စပိန်သို့ ပြန်ထားသောစာ တူနေပါက စပိန်စာဖြစ်သည်
-            if text.strip().lower() == (translated_es or "").strip().lower():
-                # စပိန်စာ ပို့ပါက -> မြန်မာဘာသာ တိကျစွာ ပြန်ပေးမည်
+            if text.strip().lower() == translated_es.strip().lower():
+                # စပိန်စာ ပို့ပါက -> မြန်မာဘာသာ
                 myanmar_trans = safe_translate(text, 'my')
-                final_result = f"🇲🇲 **မြန်မာဘာသာပြန်:**\n{myanmar_trans}"
+                final_result = f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
             else:
                 # အင်္ဂလိပ်စာ ပို့ပါက -> စပိန် (Manager Style) + မြန်မာဘာသာ
                 myanmar_trans = safe_translate(text, 'my')
                 spanish_manager = apply_venezuelan_manager_style(translated_es)
                 
                 final_result = (
-                    f"🇪🇸 **Spanish (Venezuela Manager Style):**\n{spanish_manager}\n\n"
-                    f"🇲🇲 **မြန်မာဘာသာပြန်:**\n{myanmar_trans}"
+                    f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
+                    f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
                 )
             
-        await update.message.reply_text(final_result)
+        await update.message.reply_text(final_result, parse_mode='Markdown')
     except Exception as e:
         logging.error(f"General Error: {e}")
         await update.message.reply_text("ဘာသာပြန်ရာတွင် အမှားအယွင်း ရှိနေပါသည်။")
