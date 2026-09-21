@@ -14,37 +14,17 @@ logging.basicConfig(
 )
 
 def translate(text, source_lang, target_lang):
-    """LibreTranslate API ကို သုံး၍ ဘာသာပြန်ခြင်း (တိကျပြီး Error မရှိပါ)"""
+    """MyMemory API ကို သုံး၍ တိကျစွာ ဘာသာပြန်ခြင်း"""
     try:
-        url = "https://libretranslate.de/translate"
-        payload = {
-            "q": text,
-            "source": source_lang,
-            "target": target_lang,
-            "format": "text"
-        }
-        headers = {"Content-Type": "application/json"}
-        response = requests.post(url, json=payload, headers=headers, timeout=10)
+        url = f"https://api.mymemory.translated.net/get?q={text}&langpair={source_lang}|{target_lang}"
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            translated = data.get("translatedText", "")
-            if translated:
-                return translated
+            translated_text = data.get("responseData", {}).get("translatedText", "")
+            if translated_text and "MYMEMORY WARNING" not in translated_text:
+                return translated_text
     except Exception as e:
-        logging.error(f"LibreTranslate Error ({source_lang} to {target_lang}): {e}")
-
-    # အကယ်၍ libretranslate.de အလုပ်မလုပ်ပါက MyMemory သို့ Fallback အနေဖြင့် ပြောင်းသုံးမည်
-    try:
-        url2 = f"https://api.mymemory.translated.net/get?q={text}&langpair={source_lang}|{target_lang}"
-        res2 = requests.get(url2, timeout=10)
-        if res2.status_code == 200:
-            data2 = res2.json()
-            translated2 = data2.get("responseData", {}).get("translatedText", "")
-            if translated2 and "MYMEMORY WARNING" not in translated2:
-                return translated2
-    except Exception as e2:
-        logging.error(f"Fallback Translate Error: {e2}")
-
+        logging.error(f"Translation Error ({source_lang}->{target_lang}): {e}")
     return text
 
 def apply_venezuelan_manager_style(spanish_text):
@@ -88,7 +68,7 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
-        # ၁။ မြန်မာစာ Unicode Range (\u1000-\u109F) ပါဝင်မှု စစ်ဆေးခြင်း
+        # မြန်မာစာ Unicode Range (\u1000-\u109F) ပါဝင်မှု စစ်ဆေးခြင်း
         is_myanmar = any('\u1000' <= char <= '\u109f' for char in text)
         
         if is_myanmar:
@@ -103,22 +83,30 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
-            # အင်္ဂလိပ် သို့မဟုတ် စပိန်စာ ဖြစ်ပါက (Auto detect source as 'en' or 'es')
-            # ပထမဦးစွာ အင်္ဂလိပ်မှ စပိန်နှင့် မြန်မာသို့ ပြန်ကြည့်မည်
-            spanish_raw = translate(text, "en", "es")
-            myanmar_trans = translate(text, "en", "my")
+            # အင်္ဂလိပ် သို့မဟုတ် စပိန်စာ ဖြစ်ပါက
+            # စပိန်စာ ဟုတ်မဟုတ် စစ်ဆေးရန် စပိန်မှ အင်္ဂလိပ်သို့ အရင်ပြန်ကြည့်မည်
+            test_english = translate(text, "es", "en")
             
-            # စပိန်စာ ဟုတ်မဟုတ် စစ်ဆေးရန် စပိန်မှ မြန်မာသို့ ပြန်ကြည့်မည်
-            spanish_check = translate(text, "es", "my")
+            # အကယ်၍ ပို့လိုက်သောစာသည် စပိန်စာဖြစ်ပါက (စပိန်မှ မြန်မာသို့ ပြန်မည်)
+            # အကယ်၍ အင်္ဂလိပ်စာဖြစ်ပါက (စပိန် Manager Style + မြန်မာသို့ ပြန်မည်)
             
-            # အကယ်၍ ပို့လိုက်သောစာသည် စပိန်စာဖြစ်နေပါက (သို့မဟုတ် အင်္ဂလိပ်နှင့် မတူတော့ပါက)
-            # ဤနေရာတွင် ရိုးရှင်းစေရန် အင်္ဂလိပ်/စပိန် မည်သည့်စာ ပို့သည်ဖြစ်စေ စပိန်နှင့် မြန်မာ နှစ်ခုလုံး ထုတ်ပေးမည်
-            spanish_manager = apply_venezuelan_manager_style(spanish_raw)
+            # ရိုးရှင်းစွာ စစ်ဆေးရန် - စပိန်မှ မြန်မာသို့ ပြန်၍ရသော ရလဒ်ကို စမ်းမည်
+            spanish_to_myanmar = translate(text, "es", "my")
             
-            final_result = (
-                f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
-                f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
-            )
+            # အကယ်၍ စပိန်စာ ဖြစ်နေပါက
+            if text.lower() in ["hola", "gracias", "buenos dias", "cómo estás"] or not is_myanmar:
+                # အင်္ဂလိပ် သို့မဟုတ် အခြားဘာသာ ဖြစ်ပါက
+                spanish_raw = translate(text, "en", "es")
+                spanish_manager = apply_venezuelan_manager_style(spanish_raw)
+                myanmar_trans = translate(text, "en", "my")
+                
+                final_result = (
+                    f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
+                    f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
+                )
+            else:
+                myanmar_trans = translate(text, "es", "my")
+                final_result = f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
             
         await update.message.reply_text(final_result, parse_mode='Markdown')
     except Exception as e:
