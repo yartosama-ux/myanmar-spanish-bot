@@ -1,12 +1,10 @@
 import logging
-import urllib.request
-import urllib.parse
-import json
 import os
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
+from deep_translator import GoogleTranslator
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
 
@@ -15,22 +13,19 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-def direct_google_translate(text, target_lang):
-    """Google Translate Web API သို့ Request ပို့၍ ဘာသာပြန်ပေးသည့် Function"""
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl=auto&tl={target_lang}&dt=t&q=" + urllib.parse.quote(text)
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-    req = urllib.request.Request(url, headers=headers)
-    
-    with urllib.request.urlopen(req) as response:
-        result = json.loads(response.read().decode('utf-8'))
-        
-    translated_text = "".join([item[0] for item in result[0] if item[0]])
-    return translated_text
+def safe_translate(text, target_lang):
+    """deep-translator သုံးပြီး ဘာသာပြန်ပေးသည့် Function"""
+    try:
+        return GoogleTranslator(source='auto', target=target_lang).translate(text)
+    except Exception as e:
+        logging.error(f"Translation Error for {target_lang}: {e}")
+        return None
 
 def apply_venezuelan_manager_style(spanish_text):
     """Venezuela မန်နေဂျာ/ရုံးသုံး Professional (Usted) စတိုင်သို့ ပြောင်းလဲပေးသည့် Logic"""
+    if not spanish_text:
+        return ""
+        
     replacements = {
         " tú ": " usted ",
         "Tú ": "Usted ",
@@ -69,9 +64,9 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if is_myanmar:
             # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ် ရုံးသုံး
-            raw_spanish = direct_google_translate(text, 'es')
+            raw_spanish = safe_translate(text, 'es')
             spanish_manager = apply_venezuelan_manager_style(raw_spanish)
-            english_trans = direct_google_translate(text, 'en')
+            english_trans = safe_translate(text, 'en')
             
             final_result = (
                 f"🇪🇸 **Spanish (Venezuela Manager Style):**\n{spanish_manager}\n\n"
@@ -79,17 +74,17 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             )
             
         else:
-            # ၂။ အင်္ဂလိပ် သို့မဟုတ် စပိန် ဟုတ်မဟုတ် စစ်ဆေးခြင်း
-            translated_es = direct_google_translate(text, 'es')
+            # ၂။ အင်္ဂလိပ် သို့မဟုတ် စပိန် စစ်ဆေးခြင်း
+            translated_es = safe_translate(text, 'es')
             
             # မူရင်းစာနှင့် စပိန်သို့ ပြန်ထားသောစာ တူနေပါက စပိန်စာဖြစ်သည်
-            if text.strip().lower() == translated_es.strip().lower():
+            if text.strip().lower() == (translated_es or "").strip().lower():
                 # စပိန်စာ ပို့ပါက -> မြန်မာဘာသာ တိကျစွာ ပြန်ပေးမည်
-                myanmar_trans = direct_google_translate(text, 'my')
+                myanmar_trans = safe_translate(text, 'my')
                 final_result = f"🇲🇲 **မြန်မာဘာသာပြန်:**\n{myanmar_trans}"
             else:
                 # အင်္ဂလိပ်စာ ပို့ပါက -> စပိန် (Manager Style) + မြန်မာဘာသာ
-                myanmar_trans = direct_google_translate(text, 'my')
+                myanmar_trans = safe_translate(text, 'my')
                 spanish_manager = apply_venezuelan_manager_style(translated_es)
                 
                 final_result = (
@@ -99,7 +94,7 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         await update.message.reply_text(final_result)
     except Exception as e:
-        logging.error(f"Translation Error: {e}")
+        logging.error(f"General Error: {e}")
         await update.message.reply_text("ဘာသာပြန်ရာတွင် အမှားအယွင်း ရှိနေပါသည်။")
 
 # Render Web Service အတွက် Port Listening Server
