@@ -7,33 +7,24 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo"
-GEMINI_API_KEY = "AQ.Ab8RN6IhM-LOFIa63B_t8LbRImEi73l05GxN5ngtcVojLSgLMQ"
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-def ai_translate(text, target_instruction):
-    """Gemini REST API ကို အသုံးပြု၍ တိကျစွာ ဘာသာပြန်ခြင်း"""
+def translate(text, source_lang, target_lang):
+    """MyMemory API ကို အသုံးပြု၍ တိကျစွာ ဘာသာပြန်ခြင်း"""
     try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
-        prompt = f"{target_instruction}\nText to translate: {text}"
-        payload = {
-            "contents": [{
-                "parts": [{"text": prompt}]
-            }]
-        }
-        response = requests.post(url, json=payload, timeout=15)
+        url = f"https://api.mymemory.translated.net/get?q={requests.utils.quote(text)}&langpair={source_lang}|{target_lang}"
+        response = requests.get(url, timeout=10)
         if response.status_code == 200:
             data = response.json()
-            translated = data["candidates"][0]["content"]["parts"][0]["text"]
-            if translated:
-                return translated.strip()
-        else:
-            logging.error(f"Gemini API Error: {response.text}")
+            translated_text = data.get("responseData", {}).get("translatedText", "")
+            if translated_text and "MYMEMORY WARNING" not in translated_text:
+                return translated_text
     except Exception as e:
-        logging.error(f"Gemini API Exception: {e}")
+        logging.error(f"Translation Error ({source_lang}->{target_lang}): {e}")
     return text
 
 def apply_venezuelan_manager_style(spanish_text):
@@ -81,9 +72,9 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         if is_myanmar:
             # မြန်မာစာ ပို့ပါက -> စပိန် (Manager Style) + အင်္ဂလိပ်
-            raw_spanish = ai_translate(text, "Translate this Burmese text into polite professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
+            raw_spanish = translate(text, "my", "es")
             spanish_manager = apply_venezuelan_manager_style(raw_spanish)
-            english_trans = ai_translate(text, "Translate this Burmese text into professional English. Return ONLY the translated text.")
+            english_trans = translate(text, "my", "en")
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
@@ -92,13 +83,13 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
             
         else:
             # အင်္ဂလိပ် သို့မဟုတ် အခြားဘာသာ ဖြစ်ပါက -> စပိန် (Manager Style) + မြန်မာဘာသာ
-            raw_spanish = ai_translate(text, "Translate this text into polite professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text.")
+            raw_spanish = translate(text, "en", "es")
             spanish_manager = apply_venezuelan_manager_style(raw_spanish)
-            myanmar_trans = ai_translate(text, "Translate this text into natural, clear Myanmar (Burmese) language. Return ONLY the translated text.")
+            myanmar_trans = translate(text, "en", "my")
             
             final_result = (
                 f"🇪🇸 *Spanish (Venezuela Manager Style):*\n{spanish_manager}\n\n"
-                f"🇲🇲 *မြන්မာဘာသာပြန်:*\n{myanmar_trans}"
+                f"🇲🇲 *မြန်မာဘာသာပြန်:*\n{myanmar_trans}"
             )
             
         await update.message.reply_text(final_result, parse_mode='Markdown')
