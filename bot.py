@@ -6,7 +6,7 @@ from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 import google.generativeai as genai
 
-TOKEN = os.environ.get("TOKEN", "8631809233:AAFdyh_E9vKjs92jqGQviGCJ34wyeDNPdEo")
+TOKEN = os.environ.get("TOKEN", "8631809233:AAHkDJwWVUnObM4pewpmjITtqSOq2F0w4as")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6Jtk6MHRTfp-yfD5UDoTC93dwhAe2kitfj--fX7v2Xcsg")
 
 # Gemini Configure လုပ်ခြင်း
