@@ -4,43 +4,29 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-import google.generativeai as genai
+from deep_translator import GoogleTranslator
 
 TOKEN = os.environ.get("TOKEN", "8631809233:AAHkDJwWVUnObM4pewpmjITtqSOq2F0w4as")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6K8jchz0x6oEoPHt-CTiQh4eJl4Y9CCpfE_v50StnsfHg")
-
-# Gemini configure
-genai.configure(api_key=GEMINI_API_KEY)
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO
 )
 
-def gemini_translate(text, system_prompt):
+def free_translate(text, target_lang):
     try:
-        # Standard gemini-1.5-flash model
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        full_prompt = f"{system_prompt}\n\nText: {text}"
-        response = model.generate_content(full_prompt)
-        return response.text.strip()
+        # API Key လုံးဝမလိုသော အခမဲ့ Translate
+        translated = GoogleTranslator(source='auto', target=target_lang).translate(text)
+        return translated
     except Exception as e:
-        logging.error(f"Gemini API Error: {e}")
-        try:
-            # Fallback model
-            model = genai.GenerativeModel('gemini-pro')
-            full_prompt = f"{system_prompt}\n\nText: {text}"
-            response = model.generate_content(full_prompt)
-            return response.text.strip()
-        except Exception as ex:
-            logging.error(f"Fallback Gemini API Error: {ex}")
-            return "Translation Error occurred."
+        logging.error(f"Translation Error: {e}")
+        return "Translation Error occurred."
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "မင်္ဂလာပါ။ Manager-Style Translate Bot သို့ ကြိုဆိုပါတယ်။\n\n"
-        "- မြန်မာစာ ပို့ပါက -> စပိန် (Venezuela Manager Style) နှင့် အင်္ဂလိပ် ဘာသာပြန်ပေးပါမည်။\n"
-        "- အင်္ဂလိပ်/စပိန်စာ ပို့ပါက -> စပိန် (Venezuela Manager Style) နှင့် မြန်မာဘာသာ ပြန်ပေးပါမည်။"
+        "မင်္ဂလာပါ။ Telegram Translate Bot သို့ ကြိုဆိုပါတယ်။\n\n"
+        "- မြန်မာစာ ပို့ပါက -> စပိန် နှင့် အင်္ဂလိပ် ဘာသာပြန်ပေးပါမည်။\n"
+        "- အင်္ဂလိပ်/စပိန်စာ ပို့ပါက -> စပိန် နှင့် မြန်မာဘာသာ ပြန်ပေးပါမည်။"
     )
 
 async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -49,22 +35,23 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     try:
+        # မြန်မာစာ ဟုတ်မဟုတ် စစ်ဆေးခြင်း
         is_myanmar = any('\u1000' <= char <= '\u109f' for char in text)
         
         if is_myanmar:
-            spanish_manager = gemini_translate(text, "Translate this text into polite, professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text without extra comments.")
-            english_trans = gemini_translate(text, "Translate this text into professional English. Return ONLY the translated text without extra comments.")
+            spanish_trans = free_translate(text, 'es')
+            english_trans = free_translate(text, 'en')
             
             final_result = (
-                f"🇪🇸 Spanish (Venezuela Manager Style):\n{spanish_manager}\n\n"
-                f"🇬🇧 English (Professional):\n{english_trans}"
+                f"🇪🇸 Spanish:\n{spanish_trans}\n\n"
+                f"🇬🇧 English:\n{english_trans}"
             )
         else:
-            spanish_manager = gemini_translate(text, "Translate this text into polite, professional Venezuelan Spanish manager style using 'Usted'. Return ONLY the translated text without extra comments.")
-            myanmar_trans = gemini_translate(text, "Translate this text into natural, clear Myanmar (Burmese) language. Return ONLY the translated text without extra comments.")
+            spanish_trans = free_translate(text, 'es')
+            myanmar_trans = free_translate(text, 'my')
             
             final_result = (
-                f"🇪🇸 Spanish (Venezuela Manager Style):\n{spanish_manager}\n\n"
+                f"🇪🇸 Spanish:\n{spanish_trans}\n\n"
                 f"🇲🇲 မြန်မာဘာသာပြန်:\n{myanmar_trans}"
             )
             
@@ -91,5 +78,5 @@ if __name__ == '__main__':
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
     
-    print("Bot is starting...")
+    print("Bot is starting without API Key...")
     app.run_polling()
