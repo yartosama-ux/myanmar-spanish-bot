@@ -26,17 +26,15 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Render Environment Variable မှ MODEL ကို ဖတ်ပါမည်။
-# မရှိပါက Default အနေဖြင့် "gemini-1.5-flash" ကို သုံးပါမည်။
-MODEL = os.getenv("MODEL", "gemini-1.5-flash")
+# Model အမည်ကို gemini-1.5-flash ဟု အတိအကျ သတ်မှတ်ပါ
+MODEL = os.getenv("MODEL", "gemini-2.0-flash").strip()
 
+# Gemini API Endpoint URL
 GEMINI_URL = (
-    f"https://generativelanguage.googleapis.com/v1beta/"
-    f"models/{MODEL}:generateContent"
+    f"https://generativelanguage.googleapis.com/v1beta/models/{MODEL}:generateContent"
 )
 
 MAX_TEXT_LENGTH = 5000
-
 
 # =========================================================
 # LOGGING
