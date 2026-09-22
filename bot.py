@@ -4,9 +4,11 @@ import threading
 import time
 import random
 import requests
+import logging
 
 from flask import Flask
 from telegram import Update
+from telegram.error import NetworkError, TimedOut
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -37,6 +39,18 @@ if not GEMINI_API_KEY:
 
 
 # =========================================================
+# LOGGING
+# =========================================================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(message)s",
+)
+
+logger = logging.getLogger(__name__)
+
+
+# =========================================================
 # HTTP SESSION
 # =========================================================
 
@@ -61,6 +75,7 @@ HEADERS = {
 # =========================================================
 
 def detect_language(text: str) -> str:
+
     for ch in text:
         code = ord(ch)
 
@@ -75,7 +90,7 @@ def detect_language(text: str) -> str:
         ):
             return "chinese"
 
-    # Spanish detection
+    # Spanish
     lower = text.lower()
 
     spanish_words = (
@@ -115,7 +130,7 @@ TEXT:
 
 
 # =========================================================
-# GEMINI
+# GEMINI TRANSLATION
 # =========================================================
 
 def gemini_translate(text: str, language: str) -> str:
@@ -144,12 +159,13 @@ def gemini_translate(text: str, language: str) -> str:
         }
     }
 
-    # First request
-    for attempt in range(2):
+    # Up to 3 attempts
+    for attempt in range(3):
 
         start = time.perf_counter()
 
         try:
+
             response = session.post(
                 GEMINI_URL,
                 headers=HEADERS,
@@ -159,19 +175,25 @@ def gemini_translate(text: str, language: str) -> str:
 
             elapsed = time.perf_counter() - start
 
-            print(
+            logger.info(
                 f"Gemini | {language} | "
                 f"status={response.status_code} | "
                 f"time={elapsed:.2f}s | "
                 f"attempt={attempt + 1}"
             )
 
-            # Success
+            # -------------------------------------------------
+            # SUCCESS
+            # -------------------------------------------------
+
             if response.status_code == 200:
 
                 data = response.json()
 
-                candidates = data.get("candidates", [])
+                candidates = data.get(
+                    "candidates",
+                    []
+                )
 
                 if not candidates:
                     raise RuntimeError(
@@ -197,7 +219,10 @@ def gemini_translate(text: str, language: str) -> str:
 
                 return result
 
-            # Temporary errors
+            # -------------------------------------------------
+            # TEMPORARY ERRORS
+            # -------------------------------------------------
+
             if response.status_code in (
                 408,
                 429,
@@ -207,28 +232,43 @@ def gemini_translate(text: str, language: str) -> str:
                 504,
             ):
 
-                if attempt == 0:
-                    wait = 0.8 + random.uniform(0, 0.4)
+                if attempt < 2:
 
-                    print(
+                    wait = (
+                        1.0
+                        + random.uniform(0, 1.0)
+                        * (attempt + 1)
+                    )
+
+                    logger.warning(
                         f"Temporary Gemini error "
                         f"{response.status_code}; "
                         f"retrying in {wait:.2f}s"
                     )
 
                     time.sleep(wait)
+
                     continue
 
-            # Permanent error
+            # -------------------------------------------------
+            # PERMANENT ERROR
+            # -------------------------------------------------
+
             try:
+
                 error_data = response.json()
-                error_message = error_data.get(
-                    "error", {}
-                ).get(
-                    "message",
-                    response.text[:500]
+
+                error_message = (
+                    error_data
+                    .get("error", {})
+                    .get(
+                        "message",
+                        response.text[:500]
+                    )
                 )
+
             except Exception:
+
                 error_message = response.text[:500]
 
             raise RuntimeError(
@@ -237,29 +277,45 @@ def gemini_translate(text: str, language: str) -> str:
                 f"{error_message}"
             )
 
+        # -----------------------------------------------------
+        # TIMEOUT
+        # -----------------------------------------------------
+
         except requests.Timeout:
 
-            print(
+            logger.warning(
                 f"Gemini timeout | "
                 f"attempt={attempt + 1}"
             )
 
-            if attempt == 0:
-                time.sleep(0.5)
+            if attempt < 2:
+
+                time.sleep(
+                    1.0 + random.uniform(0, 0.5)
+                )
+
                 continue
 
             raise RuntimeError(
                 "Gemini response timeout"
             )
 
+        # -----------------------------------------------------
+        # NETWORK ERROR
+        # -----------------------------------------------------
+
         except requests.RequestException as e:
 
-            print(
-                f"Gemini network error: {e}"
+            logger.warning(
+                f"Gemini network error | {e}"
             )
 
-            if attempt == 0:
-                time.sleep(0.5)
+            if attempt < 2:
+
+                time.sleep(
+                    1.0 + random.uniform(0, 0.5)
+                )
+
                 continue
 
             raise RuntimeError(
@@ -267,15 +323,21 @@ def gemini_translate(text: str, language: str) -> str:
             )
 
     raise RuntimeError(
-        "Gemini request failed"
+        "Gemini request failed after retries"
     )
 
 
 # =========================================================
-# TELEGRAM HANDLER
+# TELEGRAM COMMAND
 # =========================================================
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def start(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message:
+        return
 
     await update.message.reply_text(
         "မင်္ဂလာပါ 👋\n\n"
@@ -285,12 +347,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+# =========================================================
+# TELEGRAM TRANSLATION HANDLER
+# =========================================================
+
 async def translate_message(
     update: Update,
     context: ContextTypes.DEFAULT_TYPE
 ):
 
-    if not update.message or not update.message.text:
+    if not update.message:
+        return
+
+    if not update.message.text:
         return
 
     text = update.message.text.strip()
@@ -300,20 +369,25 @@ async def translate_message(
 
     # Prevent extremely large requests
     if len(text) > 5000:
+
         await update.message.reply_text(
             "စာအရမ်းရှည်နေပါတယ်။ "
             "စာကို အပိုင်းခွဲပြီး ပို့ပေးပါ။"
         )
+
         return
 
     language = detect_language(text)
 
-    # Small processing message
-    status_message = await update.message.reply_text(
-        "⚡ ဘာသာပြန်နေပါတယ်..."
-    )
+    status_message = None
 
     try:
+
+        status_message = (
+            await update.message.reply_text(
+                "⚡ ဘာသာပြန်နေပါတယ်..."
+            )
+        )
 
         result = await asyncio.to_thread(
             gemini_translate,
@@ -327,13 +401,50 @@ async def translate_message(
 
     except Exception as e:
 
-        print(
+        logger.exception(
             f"Translation error: {repr(e)}"
         )
 
-        await status_message.edit_text(
-            "⚠️ ခဏတာ ဘာသာပြန်မရသေးပါ။ "
-            "ခဏအကြာ ပြန်ပို့ပေးပါ။"
+        if status_message:
+
+            try:
+
+                await status_message.edit_text(
+                    "⚠️ ခဏတာ ဘာသာပြန်မရသေးပါ။ "
+                    "ခဏအကြာ ပြန်ပို့ပေးပါ။"
+                )
+
+            except Exception:
+
+                logger.exception(
+                    "Failed to edit Telegram status message"
+                )
+
+
+# =========================================================
+# TELEGRAM ERROR HANDLER
+# =========================================================
+
+async def telegram_error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    error = context.error
+
+    if isinstance(
+        error,
+        (NetworkError, TimedOut)
+    ):
+
+        logger.warning(
+            f"Telegram network error: {error}"
+        )
+
+    else:
+
+        logger.exception(
+            f"Telegram error: {error}"
         )
 
 
@@ -346,30 +457,51 @@ app = Flask(__name__)
 
 @app.route("/")
 def health():
-    return "Telegram Translation Bot is running."
+
+    return (
+        "Telegram Translation Bot is running.",
+        200
+    )
+
+
+@app.route("/health")
+def health_check():
+
+    return {
+        "status": "ok",
+        "bot": "telegram-translation"
+    }, 200
 
 
 def run_health_server():
+
     port = int(
-        os.environ.get("PORT", 10000)
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    logger.info(
+        f"Health server starting on port {port}"
     )
 
     app.run(
         host="0.0.0.0",
-        port=port
+        port=port,
+        threaded=True
     )
 
 
 # =========================================================
-# MAIN
+# TELEGRAM BOT
 # =========================================================
 
-def main():
+def create_bot():
 
-    threading.Thread(
-        target=run_health_server,
-        daemon=True
-    ).start()
+    logger.info(
+        "Creating Telegram application..."
+    )
 
     bot = (
         Application.builder()
@@ -393,14 +525,86 @@ def main():
         )
     )
 
-    print(
-        "🚀 Fastest Translation Bot started"
+    bot.add_error_handler(
+        telegram_error_handler
     )
 
+    return bot
+
+
+# =========================================================
+# MAIN
+# =========================================================
+
+def main():
+
+    logger.info(
+        "========================================"
+    )
+
+    logger.info(
+        "🚀 Translation Bot starting..."
+    )
+
+    logger.info(
+        f"Gemini model: {MODEL}"
+    )
+
+    logger.info(
+        f"Telegram token loaded: {bool(TOKEN)}"
+    )
+
+    logger.info(
+        f"Gemini API key loaded: {bool(GEMINI_API_KEY)}"
+    )
+
+    logger.info(
+        "========================================"
+    )
+
+    # Start Render health server
+    threading.Thread(
+        target=run_health_server,
+        daemon=True
+    ).start()
+
+    # Create Telegram application
+    bot = create_bot()
+
+    logger.info(
+        "Telegram polling starting..."
+    )
+
+    # PTB automatically handles normal polling lifecycle.
     bot.run_polling(
-        drop_pending_updates=True
+        drop_pending_updates=True,
+        bootstrap_retries=5,
+        close_loop=False,
     )
 
+
+# =========================================================
+# ENTRY POINT
+# =========================================================
 
 if __name__ == "__main__":
-    main()
+
+    try:
+
+        main()
+
+    except KeyboardInterrupt:
+
+        logger.info(
+            "Bot stopped manually."
+        )
+
+    except Exception as e:
+
+        logger.exception(
+            f"FATAL BOT ERROR: {repr(e)}"
+        )
+
+        # Let Render see the process failure
+        # so the service can restart it.
+        raise
