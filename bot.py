@@ -1,11 +1,11 @@
 import logging
 import os
-import asyncio
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
+import urllib.parse
+import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
-from googletrans import Translator
 
 TOKEN = os.environ.get("TOKEN", "8631809233:AAHkDJwWVUnObM4pewpmjITtqSOq2F0w4as")
 
@@ -14,14 +14,29 @@ logging.basicConfig(
     level=logging.INFO
 )
 
-translator = Translator()
-
-async def free_translate(text, target_lang):
+def free_google_translate(text, target_lang):
     try:
-        # Async translator call
-        loop = asyncio.get_event_loop()
-        res = await loop.run_in_executor(None, lambda: translator.translate(text, dest=target_lang))
-        return res.text
+        # Google Translate ရဲ့ တိုက်ရိုက် API Endpoint (API Key လုံးဝ မလိုပါ)
+        url = "https://translate.googleapis.com/translate_a/single"
+        params = {
+            "client": "gtx",
+            "sl": "auto",
+            "tl": target_lang,
+            "dt": "t",
+            "q": text
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"
+        }
+        response = requests.get(url, params=params, headers=headers, timeout=10)
+        
+        if response.status_code == 200:
+            result = response.json()
+            # ဘာသာပြန်ချက် စာကြောင်းများကို ပေါင်းစပ်ပေးခြင်း
+            translated_text = "".join([item[0] for item in result[0] if item[0]])
+            return translated_text
+        else:
+            return "Translation Error occurred."
     except Exception as e:
         logging.error(f"Translation Error: {e}")
         return "Translation Error occurred."
@@ -42,16 +57,16 @@ async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         is_myanmar = any('\u1000' <= char <= '\u109f' for char in text)
         
         if is_myanmar:
-            spanish_trans = await free_translate(text, 'es')
-            english_trans = await free_translate(text, 'en')
+            spanish_trans = free_google_translate(text, 'es')
+            english_trans = free_google_translate(text, 'en')
             
             final_result = (
                 f"🇪🇸 Spanish:\n{spanish_trans}\n\n"
                 f"🇬🇧 English:\n{english_trans}"
             )
         else:
-            spanish_trans = await free_translate(text, 'es')
-            myanmar_trans = await free_translate(text, 'my')
+            spanish_trans = free_google_translate(text, 'es')
+            myanmar_trans = free_google_translate(text, 'my')
             
             final_result = (
                 f"🇪🇸 Spanish:\n{spanish_trans}\n\n"
