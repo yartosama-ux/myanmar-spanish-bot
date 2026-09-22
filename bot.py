@@ -7,7 +7,7 @@ import threading
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
-TOKEN = os.environ.get("TOKEN", "8631809233:AAHkDJwWVUnObM4pewpmjITtqSOq2F0w4as")
+TOKEN = os.environ.get("TOKEN", "8631809233:AAFOH3JM77-zUoZm8VHI12rWXzx6rjwv7bM")
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "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")
 
 logging.basicConfig(
