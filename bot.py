@@ -1,8 +1,9 @@
 import logging
 import os
+import json
+import urllib.request
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
-import requests
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -18,8 +19,9 @@ def ai_translate(text, system_prompt):
     try:
         url = "https://api.groq.com/openai/v1/chat/completions"
         headers = {
-            "Authorization": f"Bearer {GROQ_API_KEY}",
-            "Content-Type": "application/json"
+            "Authorization": f"Bearer {GROQ_API_KEY.strip()}",
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0"
         }
         payload = {
             "model": "llama-3.3-70b-versatile",
@@ -29,12 +31,16 @@ def ai_translate(text, system_prompt):
             ],
             "temperature": 0.3
         }
-        res = requests.post(url, json=payload, headers=headers, timeout=10)
-        if res.status_code == 200:
-            return res.json()['choices'][0]['message']['content'].strip()
-        else:
-            logging.error(f"Groq API Error Response: {res.text}")
-            return "Translation Error occurred."
+        
+        data = json.dumps(payload).encode('utf-8')
+        req = urllib.request.Request(url, data=data, headers=headers, method='POST')
+        
+        with urllib.request.urlopen(req, timeout=15) as response:
+            if response.status == 200:
+                res_body = json.loads(response.read().decode('utf-8'))
+                return res_body['choices'][0]['message']['content'].strip()
+            else:
+                return "Translation Error occurred."
     except Exception as e:
         logging.error(f"Groq API Exception: {e}")
         return "Translation Error occurred."
