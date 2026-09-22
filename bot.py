@@ -26,19 +26,23 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Render ရှိ MODEL Variable ကို ဖတ်ယူမည် (Default: gemini-2.0-flash)
-MODEL = os.getenv("MODEL", "gemini-2.0-flash").strip()
-
-# 404 Error ပျောက်စေရန် models/ Prefix ကို သေချာအောင် ထည့်သွင်းခြင်း
-if not MODEL.startswith("models/"):
-    MODEL_PATH = f"models/{MODEL}"
-else:
-    MODEL_PATH = MODEL
-
-# Gemini 2.0 Flash Endpoint URL
-GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/{MODEL_PATH}:generateContent"
-
 MAX_TEXT_LENGTH = 5000
+
+# Preferred models.
+# The bot will check which one is actually available.
+PREFERRED_MODELS = [
+    "gemini-3.5-flash-lite",
+    "gemini-3.1-flash-lite",
+]
+
+# Gemini API
+GEMINI_BASE_URL = (
+    "https://generativelanguage.googleapis.com/v1beta"
+)
+
+MODELS_URL = (
+    f"{GEMINI_BASE_URL}/models"
+)
 
 
 # =========================================================
@@ -54,7 +58,8 @@ logger = logging.getLogger("translation_bot")
 
 
 # =========================================================
-# REUSABLE HTTP SESSION
+# HTTP SESSION
+# Reuse HTTPS connections
 # =========================================================
 
 session = requests.Session()
@@ -69,17 +74,34 @@ session.mount("https://", adapter)
 
 
 # =========================================================
+# MODEL CACHE
+# =========================================================
+
+_current_model = None
+
+_model_lock = threading.Lock()
+
+
+# =========================================================
 # LANGUAGE DETECTION
 # =========================================================
 
 def detect_language(text: str) -> str:
-    text_lower = text.lower()
 
+    # -----------------------------------------------------
     # Myanmar
-    if any("\u1000" <= char <= "\u109f" for char in text):
+    # -----------------------------------------------------
+
+    if any(
+        "\u1000" <= char <= "\u109f"
+        for char in text
+    ):
         return "myanmar"
 
+    # -----------------------------------------------------
     # Chinese
+    # -----------------------------------------------------
+
     chinese_count = sum(
         1
         for char in text
@@ -89,34 +111,99 @@ def detect_language(text: str) -> str:
     if chinese_count >= 2:
         return "chinese"
 
+    # -----------------------------------------------------
     # Spanish special characters
-    spanish_chars = "áéíóúüñÁÉÍÓÚÜÑ¿¡"
+    # -----------------------------------------------------
 
-    if any(char in spanish_chars for char in text):
+    spanish_chars = (
+        "áéíóúüñÁÉÍÓÚÜÑ¿¡"
+    )
+
+    if any(
+        char in spanish_chars
+        for char in text
+    ):
         return "spanish"
 
-    # Common Spanish keywords checklist
-    spanish_keywords = {
-        "entiendo", "usted", "interpretó", "retirar", "saldo", "restante",
-        "embargo", "instrucción", "indicaba", "realizar", "nuevamente",
-        "antes", "pasar", "que", "para", "como", "por", "una", "uno",
-        "los", "las", "del", "con", "esta", "está", "tengo", "quiero",
-        "puedo", "dinero", "porque", "pero", "ustedes", "gracias", "hola",
-        "también", "tambien", "esto", "eso", "cuando", "cómo", "dónde",
-        "donde", "hacer", "tiene", "tienen", "hay", "muy", "más", "mas",
-        "necesito", "puede", "primer", "primero", "después", "despues",
-        "finalmente", "otorgar", "debía", "debia", "retiro"
+    # -----------------------------------------------------
+    # Spanish common words
+    # -----------------------------------------------------
+
+    spanish_words = {
+        "que",
+        "para",
+        "como",
+        "por",
+        "una",
+        "uno",
+        "unos",
+        "unas",
+        "los",
+        "las",
+        "del",
+        "con",
+        "sin",
+        "esta",
+        "está",
+        "tengo",
+        "tiene",
+        "tienen",
+        "quiero",
+        "puedo",
+        "puede",
+        "pueden",
+        "dinero",
+        "porque",
+        "pero",
+        "usted",
+        "ustedes",
+        "gracias",
+        "hola",
+        "también",
+        "tambien",
+        "esto",
+        "eso",
+        "cuando",
+        "cómo",
+        "como",
+        "dónde",
+        "donde",
+        "hacer",
+        "hay",
+        "muy",
+        "más",
+        "mas",
+        "necesito",
+        "necesitamos",
+        "debe",
+        "deben",
+        "favor",
+        "ahora",
+        "mañana",
+        "hoy",
+        "dinero",
+        "cuenta",
+        "trabajo",
+        "empresa",
+        "cliente",
+        "información",
+        "informacion",
     }
 
     words = {
-        word.strip(".,!?¿¡:;")
-        for word in text_lower.split()
+        word.lower().strip(
+            ".,!?¿¡:;()[]{}\"'"
+        )
+        for word in text.split()
     }
 
-    if words.intersection(spanish_keywords):
+    if words.intersection(spanish_words):
         return "spanish"
 
-    # Default = English
+    # -----------------------------------------------------
+    # Default
+    # -----------------------------------------------------
+
     return "english"
 
 
@@ -124,56 +211,262 @@ def detect_language(text: str) -> str:
 # PROMPT
 # =========================================================
 
-def build_prompt(text: str, language: str) -> str:
+def build_prompt(
+    text: str,
+    language: str
+) -> str:
 
-    # Spanish → Myanmar
+    # =====================================================
+    # SPANISH → MYANMAR
+    # =====================================================
+
     if language == "spanish":
 
         return f"""
-Translate the following Spanish text into natural and accurate Burmese (Myanmar).
+Translate the following Spanish text into Burmese.
 
-Rules:
-- Preserve the exact meaning.
-- Keep original numbers, amounts, dates, and formatting unchanged.
+IMPORTANT:
+- Preserve the exact original meaning.
+- Translate accurately and naturally.
+- Do not change the intention.
+- Do not add information.
+- Do not remove information.
+- Do not explain.
+- Do not summarize.
+- Keep names, numbers, dates and money amounts unchanged.
 - Return ONLY the Burmese translation.
-- Do not add explanations or notes.
 
-TEXT:
+Spanish text:
 {text}
 """
 
-    # Myanmar / English / Chinese → Spanish
+    # =====================================================
+    # MYANMAR / ENGLISH / CHINESE → SPANISH
+    # =====================================================
 
     return f"""
-Translate this text into professional Venezuelan Spanish.
+Translate the following text into professional Venezuelan Spanish.
 
-Rules:
-- Sound like a professional manager communicating with a client or colleague.
+IMPORTANT:
+- Write like a professional manager communicating with a client or colleague.
 - Use natural, clear and professional Venezuelan Spanish.
-- Preserve the exact meaning and intention.
-- Do not add or remove information.
-- Keep names, numbers, dates and amounts unchanged.
+- Preserve the exact original meaning and intention.
+- Keep the wording close to the original.
+- Do not add information.
+- Do not remove information.
+- Do not explain.
+- Do not summarize.
+- Keep names, numbers, dates and money amounts unchanged.
 - Return ONLY the Spanish translation.
 
-SOURCE LANGUAGE:
+Source language:
 {language}
 
-TEXT:
+Text:
 {text}
 """
 
 
 # =========================================================
-# GEMINI API
+# GET AVAILABLE GEMINI MODELS
 # =========================================================
 
-def gemini_translate(text: str) -> str:
+def get_available_model(force_refresh=False):
+
+    global _current_model
+
+    with _model_lock:
+
+        # -------------------------------------------------
+        # Use cached model
+        # -------------------------------------------------
+
+        if _current_model and not force_refresh:
+            return _current_model
+
+        if not GEMINI_API_KEY:
+            raise RuntimeError(
+                "GEMINI_API_KEY is missing"
+            )
+
+        headers = {
+            "x-goog-api-key": GEMINI_API_KEY,
+        }
+
+        start = time.perf_counter()
+
+        try:
+
+            response = session.get(
+                MODELS_URL,
+                headers=headers,
+                timeout=(5, 10),
+            )
+
+            elapsed = round(
+                time.perf_counter() - start,
+                2,
+            )
+
+            logger.info(
+                "Gemini model list | status=%s | time=%ss",
+                response.status_code,
+                elapsed,
+            )
+
+            if response.status_code != 200:
+
+                try:
+                    error_data = response.json()
+                except Exception:
+                    error_data = response.text[:1000]
+
+                logger.error(
+                    "Gemini model list error | status=%s | body=%s",
+                    response.status_code,
+                    error_data,
+                )
+
+                raise RuntimeError(
+                    f"Gemini model list error "
+                    f"{response.status_code}: "
+                    f"{error_data}"
+                )
+
+            data = response.json()
+
+            available = set()
+
+            for model in data.get(
+                "models",
+                []
+            ):
+
+                name = model.get(
+                    "name",
+                    ""
+                )
+
+                methods = model.get(
+                    "supportedGenerationMethods",
+                    []
+                )
+
+                # We only need models supporting generateContent
+                if (
+                    "generateContent" in methods
+                    and name.startswith("models/")
+                ):
+                    short_name = name.split(
+                        "models/",
+                        1
+                    )[1]
+
+                    available.add(
+                        short_name
+                    )
+
+            logger.info(
+                "Available translation models: %s",
+                sorted(available),
+            )
+
+            # -------------------------------------------------
+            # Select preferred model
+            # -------------------------------------------------
+
+            for preferred in PREFERRED_MODELS:
+
+                if preferred in available:
+
+                    _current_model = preferred
+
+                    logger.info(
+                        "Selected Gemini model: %s",
+                        _current_model,
+                    )
+
+                    return _current_model
+
+            # -------------------------------------------------
+            # Fallback:
+            # Search for any flash-lite model
+            # -------------------------------------------------
+
+            fallback_candidates = [
+                model
+                for model in available
+                if "flash-lite" in model
+            ]
+
+            if fallback_candidates:
+
+                # Prefer newest-looking stable model
+                fallback_candidates.sort(
+                    reverse=True
+                )
+
+                _current_model = (
+                    fallback_candidates[0]
+                )
+
+                logger.warning(
+                    "Using fallback Gemini model: %s",
+                    _current_model,
+                )
+
+                return _current_model
+
+            raise RuntimeError(
+                "No compatible Gemini "
+                "generateContent model is available "
+                "for this API key."
+            )
+
+        except requests.exceptions.Timeout:
+
+            raise RuntimeError(
+                "Gemini model list timeout"
+            )
+
+        except requests.exceptions.RequestException as error:
+
+            raise RuntimeError(
+                f"Gemini model list connection failed: "
+                f"{error}"
+            )
+
+
+# =========================================================
+# GEMINI TRANSLATION
+# =========================================================
+
+def gemini_translate(
+    text: str
+) -> str:
 
     if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY is missing")
+        raise RuntimeError(
+            "GEMINI_API_KEY is missing"
+        )
 
     language = detect_language(text)
-    prompt = build_prompt(text, language)
+
+    prompt = build_prompt(
+        text,
+        language,
+    )
+
+    # -----------------------------------------------------
+    # Get an actually available model
+    # -----------------------------------------------------
+
+    model = get_available_model()
+
+    url = (
+        f"{GEMINI_BASE_URL}/models/"
+        f"{model}:generateContent"
+    )
 
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
@@ -191,12 +484,19 @@ def gemini_translate(text: str) -> str:
             }
         ],
         "generationConfig": {
-            "maxOutputTokens": 1000,
-            "temperature": 0.2
+            "maxOutputTokens": 1200,
+
+            "thinkingConfig": {
+                "thinkingLevel": "minimal"
+            }
         }
     }
 
-    max_attempts = 4
+    # -----------------------------------------------------
+    # Retry settings
+    # -----------------------------------------------------
+
+    max_attempts = 3
 
     retry_statuses = {
         408,
@@ -207,107 +507,241 @@ def gemini_translate(text: str) -> str:
         504,
     }
 
-    for attempt in range(1, max_attempts + 1):
+    for attempt in range(
+        1,
+        max_attempts + 1
+    ):
 
         request_start = time.perf_counter()
 
         try:
 
             logger.info(
-                "Gemini request | attempt=%s/%s | language=%s | chars=%s",
+                "Gemini request | "
+                "attempt=%s/%s | "
+                "model=%s | "
+                "language=%s | "
+                "chars=%s",
                 attempt,
                 max_attempts,
+                model,
                 language,
                 len(text),
             )
 
             response = session.post(
-                GEMINI_URL,
+                url,
                 headers=headers,
                 json=data,
-                timeout=(5, 30),
+                timeout=(5, 25),
             )
 
             elapsed = round(
-                time.perf_counter() - request_start,
+                time.perf_counter()
+                - request_start,
                 2,
             )
 
             status = response.status_code
 
             logger.info(
-                "Gemini response | status=%s | time=%ss | attempt=%s",
+                "Gemini response | "
+                "status=%s | "
+                "time=%ss | "
+                "attempt=%s",
                 status,
                 elapsed,
                 attempt,
             )
 
+            # =================================================
             # SUCCESS
+            # =================================================
+
             if status == 200:
 
                 result = response.json()
 
-                candidates = result.get("candidates", [])
+                candidates = result.get(
+                    "candidates",
+                    []
+                )
 
                 if not candidates:
-                    raise RuntimeError("Gemini returned no candidates")
+                    raise RuntimeError(
+                        "Gemini returned no candidates"
+                    )
 
-                content = candidates[0].get("content", {})
-                parts = content.get("parts", [])
+                content = candidates[0].get(
+                    "content",
+                    {}
+                )
+
+                parts = content.get(
+                    "parts",
+                    []
+                )
 
                 answer_parts = []
 
                 for part in parts:
-                    part_text = part.get("text", "")
-                    if part_text:
-                        answer_parts.append(part_text)
 
-                answer = "".join(answer_parts).strip()
+                    # Ignore thought content
+                    if part.get("thought"):
+                        continue
+
+                    part_text = part.get(
+                        "text",
+                        ""
+                    )
+
+                    if part_text:
+                        answer_parts.append(
+                            part_text
+                        )
+
+                answer = "".join(
+                    answer_parts
+                ).strip()
 
                 if not answer:
-                    raise RuntimeError("Gemini returned empty response")
+
+                    raise RuntimeError(
+                        "Gemini returned empty response"
+                    )
+
+                total = round(
+                    time.perf_counter()
+                    - request_start,
+                    2,
+                )
 
                 logger.info(
-                    "Translation successful | total_time=%ss",
-                    round(time.perf_counter() - request_start, 2),
+                    "Translation successful | "
+                    "model=%s | "
+                    "time=%ss",
+                    model,
+                    total,
                 )
 
                 return answer
 
+            # =================================================
+            # 404
+            # =================================================
+
+            if status == 404:
+
+                try:
+                    error_data = response.json()
+                except Exception:
+                    error_data = response.text[:1500]
+
+                logger.error(
+                    "Gemini 404 | model=%s | body=%s",
+                    model,
+                    error_data,
+                )
+
+                # Clear cached model
+                global _current_model
+
+                with _model_lock:
+                    _current_model = None
+
+                # Try model discovery once
+                if attempt == 1:
+
+                    model = get_available_model(
+                        force_refresh=True
+                    )
+
+                    url = (
+                        f"{GEMINI_BASE_URL}/models/"
+                        f"{model}:generateContent"
+                    )
+
+                    logger.info(
+                        "Retrying with available model: %s",
+                        model,
+                    )
+
+                    continue
+
+                raise RuntimeError(
+                    f"Gemini API 404: "
+                    f"{error_data}"
+                )
+
+            # =================================================
             # TEMPORARY ERROR
+            # =================================================
+
             if status in retry_statuses:
 
                 if attempt < max_attempts:
 
-                    base_delay = 2 ** (attempt - 1)
-                    jitter = random.uniform(0.0, 0.5)
-                    delay = base_delay + jitter
+                    # 1.0 → 2.0 seconds approximately
+                    delay = (
+                        2 ** (attempt - 1)
+                        + random.uniform(
+                            0.1,
+                            0.5
+                        )
+                    )
 
                     logger.warning(
-                        "Gemini temporary error %s | retrying in %.2fs",
+                        "Gemini temporary error %s | "
+                        "retrying in %.2fs",
                         status,
                         delay,
                     )
 
                     time.sleep(delay)
+
                     continue
 
-            # PERMANENT ERROR
+            # =================================================
+            # OTHER ERROR
+            # =================================================
+
             try:
                 error_data = response.json()
-                logger.error("Gemini API error: %s", error_data)
             except Exception:
-                logger.error("Gemini API error body: %s", response.text[:500])
+                error_data = response.text[:1500]
 
-            raise RuntimeError(f"Gemini API error {status}")
+            logger.error(
+                "Gemini API error | "
+                "status=%s | "
+                "model=%s | "
+                "body=%s",
+                status,
+                model,
+                error_data,
+            )
 
+            raise RuntimeError(
+                f"Gemini API error {status}: "
+                f"{error_data}"
+            )
+
+        # =====================================================
         # TIMEOUT
+        # =====================================================
+
         except requests.exceptions.Timeout as error:
 
-            elapsed = round(time.perf_counter() - request_start, 2)
+            elapsed = round(
+                time.perf_counter()
+                - request_start,
+                2,
+            )
 
             logger.warning(
-                "Gemini timeout | time=%ss | attempt=%s | %s",
+                "Gemini timeout | "
+                "time=%ss | "
+                "attempt=%s | "
+                "%s",
                 elapsed,
                 attempt,
                 error,
@@ -315,53 +749,81 @@ def gemini_translate(text: str) -> str:
 
             if attempt < max_attempts:
 
-                base_delay = 2 ** (attempt - 1)
-                jitter = random.uniform(0.0, 0.5)
-                delay = base_delay + jitter
-
-                logger.info("Retrying after timeout in %.2fs", delay)
+                delay = (
+                    2 ** (attempt - 1)
+                    + random.uniform(
+                        0.1,
+                        0.5
+                    )
+                )
 
                 time.sleep(delay)
+
                 continue
 
-            raise RuntimeError("Gemini response timeout")
+            raise RuntimeError(
+                "Gemini response timeout"
+            )
 
+        # =====================================================
         # CONNECTION ERROR
+        # =====================================================
+
         except requests.exceptions.ConnectionError as error:
 
             logger.warning(
-                "Gemini connection error | attempt=%s | %s",
+                "Gemini connection error | "
+                "attempt=%s | %s",
                 attempt,
                 error,
             )
 
             if attempt < max_attempts:
 
-                base_delay = 2 ** (attempt - 1)
-                jitter = random.uniform(0.0, 0.5)
-                delay = base_delay + jitter
+                delay = (
+                    2 ** (attempt - 1)
+                    + random.uniform(
+                        0.1,
+                        0.5
+                    )
+                )
 
                 time.sleep(delay)
+
                 continue
 
-            raise RuntimeError("Gemini connection failed")
+            raise RuntimeError(
+                "Gemini connection failed"
+            )
 
+        # =====================================================
         # OTHER REQUEST ERROR
+        # =====================================================
+
         except requests.exceptions.RequestException as error:
 
-            logger.exception("Gemini request error: %s", error)
+            logger.exception(
+                "Gemini request exception: %s",
+                error,
+            )
 
             if attempt < max_attempts:
+
                 time.sleep(1)
+
                 continue
 
-            raise RuntimeError("Gemini request failed")
+            raise RuntimeError(
+                "Gemini request failed"
+            )
 
-    raise RuntimeError("Gemini unavailable after retries")
+    raise RuntimeError(
+        "Gemini unavailable after retries"
+    )
 
 
 # =========================================================
-# START COMMAND
+# /START
 # =========================================================
 
 async def start(
@@ -386,8 +848,8 @@ async def start(
         "ပြန်ပေးပါမယ်။\n\n"
 
         "Spanish ပို့ပါက "
-        "အဓိပ္ပာယ်တိကျသော မြန်မာဘာသာဖြင့် "
-        "ပြန်ပေးပါမယ်။"
+        "မူရင်းအဓိပ္ပာယ်ကို တိကျစွာထိန်းသိမ်းပြီး "
+        "မြန်မာဘာသာဖြင့် ပြန်ပေးပါမယ်။"
     )
 
 
@@ -403,15 +865,20 @@ async def translate_text(
     if not update.message:
         return
 
-    if not update.message.text:
-        return
-
-    text = update.message.text.strip()
+    text = update.message.text
 
     if not text:
         return
 
-    # LENGTH CHECK
+    text = text.strip()
+
+    if not text:
+        return
+
+    # -----------------------------------------------------
+    # Length
+    # -----------------------------------------------------
+
     if len(text) > MAX_TEXT_LENGTH:
 
         await update.message.reply_text(
@@ -422,35 +889,55 @@ async def translate_text(
 
         return
 
-    total_start = time.perf_counter()
+    # -----------------------------------------------------
+    # Processing message
+    # -----------------------------------------------------
 
-    processing = await update.message.reply_text("⚡ ဘာသာပြန်နေပါတယ်...")
+    processing = await update.message.reply_text(
+        "⚡ ဘာသာပြန်နေပါတယ်..."
+    )
+
+    total_start = time.perf_counter()
 
     try:
 
-        # GEMINI TRANSLATION
         result = await asyncio.to_thread(
             gemini_translate,
             text,
         )
 
-        # TELEGRAM RESPONSE
-        await processing.edit_text(result)
+        # -------------------------------------------------
+        # Send result
+        # -------------------------------------------------
 
-        total_time = round(time.perf_counter() - total_start, 2)
+        await processing.edit_text(
+            result
+        )
+
+        total_time = round(
+            time.perf_counter()
+            - total_start,
+            2,
+        )
 
         logger.info(
-            "Telegram translation complete | total=%ss | chars=%s",
+            "Telegram translation complete | "
+            "total=%ss | chars=%s",
             total_time,
             len(text),
         )
 
     except Exception as error:
 
-        total_time = round(time.perf_counter() - total_start, 2)
+        total_time = round(
+            time.perf_counter()
+            - total_start,
+            2,
+        )
 
         logger.exception(
-            "Translation failed | total=%ss | error=%s",
+            "Translation failed | "
+            "total=%ss | error=%s",
             total_time,
             error,
         )
@@ -472,10 +959,12 @@ async def translate_text(
 
 
 # =========================================================
-# RENDER HEALTH CHECK
+# RENDER HEALTH SERVER
 # =========================================================
 
-class HealthCheckHandler(BaseHTTPRequestHandler):
+class HealthCheckHandler(
+    BaseHTTPRequestHandler
+):
 
     def do_GET(self):
 
@@ -492,13 +981,22 @@ class HealthCheckHandler(BaseHTTPRequestHandler):
             b"Telegram Translation Bot is running."
         )
 
-    def log_message(self, format, *args):
+    def log_message(
+        self,
+        format,
+        *args
+    ):
         return
 
 
 def run_health_server():
 
-    port = int(os.getenv("PORT", "10000"))
+    port = int(
+        os.getenv(
+            "PORT",
+            "10000"
+        )
+    )
 
     server = HTTPServer(
         ("0.0.0.0", port),
@@ -520,19 +1018,23 @@ def run_health_server():
 def main():
 
     if not TOKEN:
-        raise RuntimeError("TOKEN environment variable is missing")
+        raise RuntimeError(
+            "TOKEN environment variable is missing"
+        )
 
     if not GEMINI_API_KEY:
-        raise RuntimeError("GEMINI_API_KEY environment variable is missing")
-
-    logger.info("Environment variables loaded")
+        raise RuntimeError(
+            "GEMINI_API_KEY environment variable is missing"
+        )
 
     logger.info(
-        "Gemini model: %s",
-        MODEL,
+        "Environment variables loaded"
     )
 
-    # RENDER HEALTH SERVER
+    # -----------------------------------------------------
+    # Render health server
+    # -----------------------------------------------------
+
     health_thread = threading.Thread(
         target=run_health_server,
         daemon=True,
@@ -540,7 +1042,10 @@ def main():
 
     health_thread.start()
 
-    # TELEGRAM APP
+    # -----------------------------------------------------
+    # Telegram application
+    # -----------------------------------------------------
+
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -556,7 +1061,7 @@ def main():
         )
     )
 
-    # Translation
+    # Text
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
@@ -564,10 +1069,17 @@ def main():
         )
     )
 
-    logger.info("Telegram Translation Bot started")
+    logger.info(
+        "Telegram Translation Bot started"
+    )
 
-    # START POLLING
-    app.run_polling(drop_pending_updates=True)
+    # -----------------------------------------------------
+    # Polling
+    # -----------------------------------------------------
+
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 # =========================================================
