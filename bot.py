@@ -26,15 +26,16 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Gemini 2.0 Flash အတွက် Model Name
+# Render ရှိ MODEL Variable ကို ဖတ်ယူမည် (Default: gemini-2.0-flash)
 MODEL = os.getenv("MODEL", "gemini-2.0-flash").strip()
 
-# models/ ပါဝင်မှုကို သေချာအောင် စစ်ဆေး၍ URL တည်ဆောက်ခြင်း
+# 404 Error ပျောက်စေရန် models/ Prefix ကို သေချာအောင် ထည့်သွင်းခြင်း
 if not MODEL.startswith("models/"):
     MODEL_PATH = f"models/{MODEL}"
 else:
     MODEL_PATH = MODEL
 
+# Gemini 2.0 Flash Endpoint URL
 GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/{MODEL_PATH}:generateContent"
 
 MAX_TEXT_LENGTH = 5000
