@@ -26,7 +26,8 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-MODEL = "gemini-3.1-flash-lite"
+# အမြန်ဆုံးနှင့် အမှန်ကန်ဆုံး ဘာသာပြန်ပေးသည့် Stable Model
+MODEL = "gemini-1.5-flash"
 
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/"
@@ -203,22 +204,17 @@ TEXT:
 def gemini_translate(text: str) -> str:
 
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY is missing"
-        )
+        raise RuntimeError("GEMINI_API_KEY is missing")
 
     language = detect_language(text)
-
-    prompt = build_prompt(
-        text,
-        language
-    )
+    prompt = build_prompt(text, language)
 
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
         "Content-Type": "application/json",
     }
 
+    # Thinking Config ကို ပယ်ဖျက်ပြီး Speed မြင့်မားစေရန် Temperature ပြင်ဆင်ထားပါသည်
     data = {
         "contents": [
             {
@@ -231,9 +227,7 @@ def gemini_translate(text: str) -> str:
         ],
         "generationConfig": {
             "maxOutputTokens": 1000,
-            "thinkingConfig": {
-                "thinkingLevel": "minimal"
-            }
+            "temperature": 0.2
         }
     }
 
@@ -243,7 +237,6 @@ def gemini_translate(text: str) -> str:
 
     max_attempts = 4
 
-    # Retry only temporary errors
     retry_statuses = {
         408,
         429,
@@ -296,60 +289,29 @@ def gemini_translate(text: str) -> str:
 
                 result = response.json()
 
-                candidates = result.get(
-                    "candidates",
-                    []
-                )
+                candidates = result.get("candidates", [])
 
                 if not candidates:
-                    raise RuntimeError(
-                        "Gemini returned no candidates"
-                    )
+                    raise RuntimeError("Gemini returned no candidates")
 
-                content = candidates[0].get(
-                    "content",
-                    {}
-                )
-
-                parts = content.get(
-                    "parts",
-                    []
-                )
+                content = candidates[0].get("content", {})
+                parts = content.get("parts", [])
 
                 answer_parts = []
 
                 for part in parts:
-
-                    # Ignore thinking parts
-                    if part.get("thought"):
-                        continue
-
-                    part_text = part.get(
-                        "text",
-                        ""
-                    )
-
+                    part_text = part.get("text", "")
                     if part_text:
-                        answer_parts.append(
-                            part_text
-                        )
+                        answer_parts.append(part_text)
 
-                answer = "".join(
-                    answer_parts
-                ).strip()
+                answer = "".join(answer_parts).strip()
 
                 if not answer:
-                    raise RuntimeError(
-                        "Gemini returned empty response"
-                    )
+                    raise RuntimeError("Gemini returned empty response")
 
                 logger.info(
                     "Translation successful | total_time=%ss",
-                    round(
-                        time.perf_counter()
-                        - request_start,
-                        2,
-                    ),
+                    round(time.perf_counter() - request_start, 2),
                 )
 
                 return answer
@@ -362,29 +324,17 @@ def gemini_translate(text: str) -> str:
 
                 if attempt < max_attempts:
 
-                    # 1s → 2s → 4s
                     base_delay = 2 ** (attempt - 1)
-
-                    # Small random jitter
-                    jitter = random.uniform(
-                        0.0,
-                        0.5,
-                    )
-
-                    delay = (
-                        base_delay
-                        + jitter
-                    )
+                    jitter = random.uniform(0.0, 0.5)
+                    delay = base_delay + jitter
 
                     logger.warning(
-                        "Gemini temporary error %s | "
-                        "retrying in %.2fs",
+                        "Gemini temporary error %s | retrying in %.2fs",
                         status,
                         delay,
                     )
 
                     time.sleep(delay)
-
                     continue
 
             # =================================================
@@ -392,24 +342,12 @@ def gemini_translate(text: str) -> str:
             # =================================================
 
             try:
-
                 error_data = response.json()
-
-                logger.error(
-                    "Gemini API error: %s",
-                    error_data,
-                )
-
+                logger.error("Gemini API error: %s", error_data)
             except Exception:
+                logger.error("Gemini API error body: %s", response.text[:500])
 
-                logger.error(
-                    "Gemini API error body: %s",
-                    response.text[:500],
-                )
-
-            raise RuntimeError(
-                f"Gemini API error {status}"
-            )
+            raise RuntimeError(f"Gemini API error {status}")
 
         # =====================================================
         # TIMEOUT
@@ -417,11 +355,7 @@ def gemini_translate(text: str) -> str:
 
         except requests.exceptions.Timeout as error:
 
-            elapsed = round(
-                time.perf_counter()
-                - request_start,
-                2,
-            )
+            elapsed = round(time.perf_counter() - request_start, 2)
 
             logger.warning(
                 "Gemini timeout | time=%ss | attempt=%s | %s",
@@ -432,32 +366,16 @@ def gemini_translate(text: str) -> str:
 
             if attempt < max_attempts:
 
-                base_delay = 2 ** (
-                    attempt - 1
-                )
+                base_delay = 2 ** (attempt - 1)
+                jitter = random.uniform(0.0, 0.5)
+                delay = base_delay + jitter
 
-                jitter = random.uniform(
-                    0.0,
-                    0.5,
-                )
-
-                delay = (
-                    base_delay
-                    + jitter
-                )
-
-                logger.info(
-                    "Retrying after timeout in %.2fs",
-                    delay,
-                )
+                logger.info("Retrying after timeout in %.2fs", delay)
 
                 time.sleep(delay)
-
                 continue
 
-            raise RuntimeError(
-                "Gemini response timeout"
-            )
+            raise RuntimeError("Gemini response timeout")
 
         # =====================================================
         # CONNECTION ERROR
@@ -473,27 +391,14 @@ def gemini_translate(text: str) -> str:
 
             if attempt < max_attempts:
 
-                base_delay = 2 ** (
-                    attempt - 1
-                )
-
-                jitter = random.uniform(
-                    0.0,
-                    0.5,
-                )
-
-                delay = (
-                    base_delay
-                    + jitter
-                )
+                base_delay = 2 ** (attempt - 1)
+                jitter = random.uniform(0.0, 0.5)
+                delay = base_delay + jitter
 
                 time.sleep(delay)
-
                 continue
 
-            raise RuntimeError(
-                "Gemini connection failed"
-            )
+            raise RuntimeError("Gemini connection failed")
 
         # =====================================================
         # OTHER REQUEST ERROR
@@ -501,24 +406,15 @@ def gemini_translate(text: str) -> str:
 
         except requests.exceptions.RequestException as error:
 
-            logger.exception(
-                "Gemini request error: %s",
-                error,
-            )
+            logger.exception("Gemini request error: %s", error)
 
             if attempt < max_attempts:
-
                 time.sleep(1)
-
                 continue
 
-            raise RuntimeError(
-                "Gemini request failed"
-            )
+            raise RuntimeError("Gemini request failed")
 
-    raise RuntimeError(
-        "Gemini unavailable after retries"
-    )
+    raise RuntimeError("Gemini unavailable after retries")
 
 
 # =========================================================
@@ -596,9 +492,7 @@ async def translate_text(
     # PROCESSING MESSAGE
     # -----------------------------------------------------
 
-    processing = await update.message.reply_text(
-        "⚡ ဘာသာပြန်နေပါတယ်..."
-    )
+    processing = await update.message.reply_text("⚡ ဘာသာပြန်နေပါတယ်...")
 
     try:
 
@@ -615,15 +509,9 @@ async def translate_text(
         # TELEGRAM RESPONSE
         # -------------------------------------------------
 
-        await processing.edit_text(
-            result
-        )
+        await processing.edit_text(result)
 
-        total_time = round(
-            time.perf_counter()
-            - total_start,
-            2,
-        )
+        total_time = round(time.perf_counter() - total_start, 2)
 
         logger.info(
             "Telegram translation complete | total=%ss | chars=%s",
@@ -633,11 +521,7 @@ async def translate_text(
 
     except Exception as error:
 
-        total_time = round(
-            time.perf_counter()
-            - total_start,
-            2,
-        )
+        total_time = round(time.perf_counter() - total_start, 2)
 
         logger.exception(
             "Translation failed | total=%ss | error=%s",
@@ -665,9 +549,7 @@ async def translate_text(
 # RENDER HEALTH CHECK
 # =========================================================
 
-class HealthCheckHandler(
-    BaseHTTPRequestHandler
-):
+class HealthCheckHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
 
@@ -684,22 +566,13 @@ class HealthCheckHandler(
             b"Telegram Translation Bot is running."
         )
 
-    def log_message(
-        self,
-        format,
-        *args
-    ):
+    def log_message(self, format, *args):
         return
 
 
 def run_health_server():
 
-    port = int(
-        os.getenv(
-            "PORT",
-            "10000"
-        )
-    )
+    port = int(os.getenv("PORT", "10000"))
 
     server = HTTPServer(
         ("0.0.0.0", port),
@@ -721,18 +594,12 @@ def run_health_server():
 def main():
 
     if not TOKEN:
-        raise RuntimeError(
-            "TOKEN environment variable is missing"
-        )
+        raise RuntimeError("TOKEN environment variable is missing")
 
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY environment variable is missing"
-        )
+        raise RuntimeError("GEMINI_API_KEY environment variable is missing")
 
-    logger.info(
-        "Environment variables loaded"
-    )
+    logger.info("Environment variables loaded")
 
     logger.info(
         "Gemini model: %s",
@@ -777,17 +644,13 @@ def main():
         )
     )
 
-    logger.info(
-        "Telegram Translation Bot started"
-    )
+    logger.info("Telegram Translation Bot started")
 
     # -----------------------------------------------------
     # START POLLING
     # -----------------------------------------------------
 
-    app.run_polling(
-        drop_pending_updates=True
-    )
+    app.run_polling(drop_pending_updates=True)
 
 
 # =========================================================
