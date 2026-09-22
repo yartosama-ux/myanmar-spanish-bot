@@ -1,5 +1,4 @@
 import os
-import json
 import time
 import asyncio
 import logging
@@ -8,6 +7,7 @@ import requests
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
+from requests.adapters import HTTPAdapter
 from telegram import Update
 from telegram.ext import (
     ApplicationBuilder,
@@ -25,15 +25,15 @@ from telegram.ext import (
 TOKEN = os.getenv("TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-# Fast / low-latency model
-MODEL = "gemini-3.5-flash-lite"
+# Fast Gemini model
+MODEL = "gemini-3.1-flash-lite"
 
-# Streaming endpoint
 GEMINI_URL = (
     f"https://generativelanguage.googleapis.com/v1beta/"
-    f"models/{MODEL}:streamGenerateContent?alt=sse"
+    f"models/{MODEL}:generateContent"
 )
 
+# Telegram message limit protection
 MAX_TEXT_LENGTH = 5000
 
 
@@ -50,39 +50,44 @@ logger = logging.getLogger("translation_bot")
 
 
 # =========================================================
+# HTTP SESSION
+# Reuse connections = less connection overhead
+# =========================================================
+
+session = requests.Session()
+
+adapter = HTTPAdapter(
+    pool_connections=20,
+    pool_maxsize=20,
+    max_retries=0,
+)
+
+session.mount("https://", adapter)
+
+
+# =========================================================
 # LANGUAGE DETECTION
 # =========================================================
 
-def detect_language(text):
+def detect_language(text: str) -> str:
 
-    # Myanmar
-    if any(
-        "\u1000" <= char <= "\u109f"
-        for char in text
-    ):
+    # Burmese
+    if any("\u1000" <= char <= "\u109f" for char in text):
         return "myanmar"
 
     # Chinese
     chinese_count = sum(
-        1
-        for char in text
+        1 for char in text
         if "\u4e00" <= char <= "\u9fff"
     )
 
     if chinese_count >= 2:
         return "chinese"
 
-    # Spanish characters
-    spanish_chars = (
-        "áéíóúüñ"
-        "ÁÉÍÓÚÜÑ"
-        "¿¡"
-    )
+    # Spanish special characters
+    spanish_chars = "áéíóúüñÁÉÍÓÚÜÑ¿¡"
 
-    if any(
-        char in spanish_chars
-        for char in text
-    ):
+    if any(char in spanish_chars for char in text):
         return "spanish"
 
     # Common Spanish words
@@ -110,152 +115,96 @@ def detect_language(text):
         "gracias",
         "hola",
         "también",
+        "tambien",
+        "esto",
+        "eso",
+        "cuando",
+        "cómo",
+        "dónde",
+        "donde",
+        "hacer",
+        "tiene",
+        "tienen",
     }
 
     words = set(
-        text.lower().split()
+        word.lower().strip(".,!?¿¡")
+        for word in text.split()
     )
 
-    if words.intersection(
-        spanish_words
-    ):
+    if words.intersection(spanish_words):
         return "spanish"
 
+    # Default = English
     return "english"
 
 
 # =========================================================
 # PROMPT
+# Only produce ONE translation
 # =========================================================
 
-def build_prompt(text, language):
+def build_prompt(text: str, language: str) -> str:
 
-    if language == "myanmar":
+    if language == "spanish":
 
         return f"""
-Translate the following Burmese text.
+Translate the following Spanish text into Burmese.
 
-Output:
-SPANISH = professional formal Venezuelan Spanish
-ENGLISH = natural English
-CHINESE = natural Simplified Chinese
-
-Rules:
-- Preserve the exact meaning.
-- Keep wording close to the original.
+Requirements:
+- Preserve the exact original meaning.
+- Translate accurately and naturally into Burmese.
 - Do not add information.
 - Do not remove information.
 - Do not explain.
 - Do not summarize.
-- Keep names, numbers, dates and money amounts unchanged.
-- Venezuelan Spanish should sound natural and professional.
+- Keep names, numbers, dates, amounts and important details unchanged.
+- Return ONLY the Burmese translation.
 
-Use exactly:
-
-SPANISH:
-...
-
-ENGLISH:
-...
-
-CHINESE:
-...
-
-TEXT:
+Spanish:
 {text}
 """
 
-    if language == "chinese":
-
-        return f"""
-Translate the following Chinese text.
-
-Output:
-SPANISH = professional formal Venezuelan Spanish
-MYANMAR = concise natural Burmese
-ENGLISH = natural English
-
-Rules:
-- Preserve the exact meaning.
-- Keep wording close to the original.
-- Do not add information.
-- Do not remove information.
-- Do not explain.
-- Do not summarize.
-- Keep names, numbers, dates and money amounts unchanged.
-- Venezuelan Spanish should sound natural and professional.
-
-Use exactly:
-
-SPANISH:
-...
-
-MYANMAR:
-...
-
-ENGLISH:
-...
-
-TEXT:
-{text}
-"""
+    # Myanmar / English / Chinese -> Venezuelan Spanish
 
     return f"""
-Translate the following text.
+Translate the following text into professional Venezuelan Spanish.
 
-Output:
-SPANISH = professional formal Venezuelan Spanish
-MYANMAR = concise natural Burmese
-CHINESE = natural Simplified Chinese
-
-Rules:
-- Preserve the exact meaning.
-- Keep wording close to the original.
+Requirements:
+- Write as a professional manager communicating with a client or colleague.
+- Use natural, clear and professional Venezuelan Spanish.
+- Preserve the exact original meaning.
+- Stay close to the original wording and intention.
 - Do not add information.
 - Do not remove information.
 - Do not explain.
 - Do not summarize.
-- Keep names, numbers, dates and money amounts unchanged.
-- Venezuelan Spanish should sound natural and professional.
+- Keep names, numbers, dates, amounts and important details unchanged.
+- Return ONLY the Spanish translation.
 
-Use exactly:
+Source language: {language}
 
-SPANISH:
-...
-
-MYANMAR:
-...
-
-CHINESE:
-...
-
-TEXT:
+Text:
 {text}
 """
 
 
 # =========================================================
-# GEMINI STREAMING TRANSLATION
+# GEMINI TRANSLATION
 # =========================================================
 
-def gemini_translate(text):
+def gemini_translate(text: str) -> str:
 
     if not GEMINI_API_KEY:
-        raise RuntimeError(
-            "GEMINI_API_KEY is missing"
-        )
+        raise RuntimeError("GEMINI_API_KEY is missing")
 
     language = detect_language(text)
 
-    prompt = build_prompt(
-        text,
-        language
-    )
+    prompt = build_prompt(text, language)
 
     headers = {
         "x-goog-api-key": GEMINI_API_KEY,
         "Content-Type": "application/json",
-        "Accept": "text/event-stream",
     }
 
     data = {
@@ -268,196 +217,162 @@ def gemini_translate(text):
                 ]
             }
         ],
+
         "generationConfig": {
-            "maxOutputTokens": 1200,
+            # Keep response reasonably short
+            "maxOutputTokens": 1000,
+
+            # Fastest practical thinking level
             "thinkingConfig": {
                 "thinkingLevel": "minimal"
             }
         }
     }
 
-    # =====================================================
-    # ONLY RETRY TEMPORARY FAILURES
-    # =====================================================
-
+    # Only one retry for temporary server problems
     max_attempts = 2
 
     for attempt in range(max_attempts):
 
         try:
 
-            logger.info(
-                "Gemini request %s/%s",
-                attempt + 1,
-                max_attempts
-            )
+            start_time = time.time()
 
-            response = requests.post(
+            response = session.post(
                 GEMINI_URL,
                 headers=headers,
                 json=data,
-
-                # Connection = 10 sec
-                # Read = 45 sec
-                timeout=(10, 45),
-
-                # Receive streamed response
-                stream=True,
+                timeout=(5, 30),
             )
 
-            status = response.status_code
+            elapsed = round(
+                time.time() - start_time,
+                2
+            )
 
             logger.info(
-                "Gemini HTTP status: %s",
-                status
+                "Gemini response: %s | %.2fs | language=%s",
+                response.status_code,
+                elapsed,
+                language,
             )
 
-            # =================================================
+            # -------------------------------------------------
             # SUCCESS
-            # =================================================
+            # -------------------------------------------------
 
-            if status == 200:
+            if response.status_code == 200:
 
-                full_text = []
+                result = response.json()
 
-                # ---------------------------------------------
-                # Read SSE stream
-                # ---------------------------------------------
+                candidates = result.get(
+                    "candidates",
+                    []
+                )
 
-                for line in response.iter_lines(
-                    decode_unicode=True
-                ):
+                if not candidates:
+                    raise RuntimeError(
+                        "Gemini returned no candidates"
+                    )
 
-                    if not line:
+                content = candidates[0].get(
+                    "content",
+                    {}
+                )
+
+                parts = content.get(
+                    "parts",
+                    []
+                )
+
+                answer_parts = []
+
+                for part in parts:
+
+                    # Ignore thought parts if returned
+                    if part.get("thought"):
                         continue
 
-                    # SSE format:
-                    # data: {...}
+                    part_text = part.get(
+                        "text",
+                        ""
+                    )
 
-                    if not line.startswith(
-                        "data:"
-                    ):
-                        continue
-
-                    json_text = line[
-                        5:
-                    ].strip()
-
-                    if not json_text:
-                        continue
-
-                    try:
-
-                        chunk = json.loads(
-                            json_text
+                    if part_text:
+                        answer_parts.append(
+                            part_text
                         )
-
-                    except json.JSONDecodeError:
-
-                        continue
-
-                    candidates = chunk.get(
-                        "candidates",
-                        []
-                    )
-
-                    if not candidates:
-                        continue
-
-                    content = candidates[0].get(
-                        "content",
-                        {}
-                    )
-
-                    parts = content.get(
-                        "parts",
-                        []
-                    )
-
-                    for part in parts:
-
-                        part_text = part.get(
-                            "text",
-                            ""
-                        )
-
-                        if part_text:
-                            full_text.append(
-                                part_text
-                            )
 
                 answer = "".join(
-                    full_text
+                    answer_parts
                 ).strip()
 
                 if not answer:
-
                     raise RuntimeError(
                         "Gemini returned empty response"
                     )
 
-                logger.info(
-                    "Translation successful"
-                )
-
                 return answer
 
-            # =================================================
-            # TEMPORARY ERROR
-            # =================================================
+            # -------------------------------------------------
+            # TEMPORARY SERVER ERRORS
+            # -------------------------------------------------
 
-            if status in (
+            if response.status_code in (
                 500,
                 502,
                 503,
                 504,
             ):
 
-                logger.warning(
-                    "Temporary Gemini error: %s",
-                    status
-                )
+                if attempt < max_attempts - 1:
+
+                    logger.warning(
+                        "Gemini temporary error %s. Retrying...",
+                        response.status_code,
+                    )
+
+                    time.sleep(0.7)
+                    continue
+
+            # -------------------------------------------------
+            # RATE LIMIT
+            # -------------------------------------------------
+
+            if response.status_code == 429:
 
                 if attempt < max_attempts - 1:
+
+                    logger.warning(
+                        "Gemini rate limited. Retrying..."
+                    )
 
                     time.sleep(1)
-
                     continue
 
-            # =================================================
-            # RATE LIMIT
-            # =================================================
+            # -------------------------------------------------
+            # OTHER ERROR
+            # -------------------------------------------------
 
-            if status == 429:
-
-                logger.warning(
-                    "Gemini rate limit"
+            try:
+                error_data = response.json()
+                logger.error(
+                    "Gemini error: %s",
+                    error_data,
+                )
+            except Exception:
+                logger.error(
+                    "Gemini error text: %s",
+                    response.text[:500],
                 )
 
-                if attempt < max_attempts - 1:
-
-                    time.sleep(2)
-
-                    continue
-
-            # =================================================
-            # OTHER ERROR
-            # =================================================
-
-            error_body = response.text[:1000]
-
-            logger.error(
-                "Gemini error: %s",
-                error_body
-            )
-
             raise RuntimeError(
-                f"Gemini API error {status}"
+                f"Gemini API error {response.status_code}"
             )
 
-        # =====================================================
+        # -----------------------------------------------------
         # TIMEOUT
-        # =====================================================
+        # -----------------------------------------------------
 
         except requests.exceptions.ReadTimeout:
 
@@ -466,14 +381,16 @@ def gemini_translate(text):
             )
 
             if attempt < max_attempts - 1:
-
-                time.sleep(1)
-
+                time.sleep(0.7)
                 continue
 
             raise RuntimeError(
                 "Gemini response timeout"
             )
+
+        # -----------------------------------------------------
+        # CONNECTION TIMEOUT
+        # -----------------------------------------------------
 
         except requests.exceptions.ConnectTimeout:
 
@@ -482,30 +399,26 @@ def gemini_translate(text):
             )
 
             if attempt < max_attempts - 1:
-
-                time.sleep(1)
-
+                time.sleep(0.7)
                 continue
 
             raise RuntimeError(
                 "Gemini connection timeout"
             )
 
-        # =====================================================
+        # -----------------------------------------------------
         # CONNECTION ERROR
-        # =====================================================
+        # -----------------------------------------------------
 
         except requests.exceptions.RequestException as error:
 
             logger.warning(
                 "Gemini connection error: %s",
-                error
+                error,
             )
 
             if attempt < max_attempts - 1:
-
-                time.sleep(1)
-
+                time.sleep(0.7)
                 continue
 
             raise RuntimeError(
@@ -523,22 +436,26 @@ def gemini_translate(text):
 
 async def start(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
         return
 
     await update.message.reply_text(
-        "မင်္ဂလာပါ 👋\n"
+        "မင်္ဂလာပါ 👋\n\n"
         "Translation Bot မှ ကြိုဆိုပါတယ်။\n\n"
 
-        "🇲🇲 မြန်မာစာ → 🇻🇪 Spanish + 🇬🇧 English + 🇨🇳 Chinese\n"
-        "🇪🇸 Spanish → 🇻🇪 Spanish + 🇲🇲 Myanmar + 🇨🇳 Chinese\n"
-        "🇬🇧 English → 🇻🇪 Spanish + 🇲🇲 Myanmar + 🇨🇳 Chinese\n"
-        "🇨🇳 Chinese → 🇻🇪 Spanish + 🇲🇲 Myanmar + 🇬🇧 English\n\n"
+        "🇲🇲 မြန်မာ → 🇻🇪 Spanish\n"
+        "🇬🇧 English → 🇻🇪 Spanish\n"
+        "🇨🇳 Chinese → 🇻🇪 Spanish\n"
+        "🇪🇸 Spanish → 🇲🇲 မြန်မာ\n\n"
 
-        "ဘာသာပြန်လိုသောစာကို ပို့ပါ။"
+        "မြန်မာ / English / Chinese ပို့ပါက "
+        "Professional Venezuelan Spanish ဖြင့် ပြန်ပေးပါမယ်။\n\n"
+
+        "Spanish ပို့ပါက "
+        "အဓိပ္ပာယ်တိကျသော မြန်မာဘာသာဖြင့် ပြန်ပေးပါမယ်။"
     )
 
 
@@ -548,7 +465,7 @@ async def start(
 
 async def translate_text(
     update: Update,
-    context: ContextTypes.DEFAULT_TYPE
+    context: ContextTypes.DEFAULT_TYPE,
 ):
 
     if not update.message:
@@ -562,39 +479,37 @@ async def translate_text(
     if not text:
         return
 
-    # =====================================================
-    # LENGTH CHECK
-    # =====================================================
+    # -------------------------------------------------------
+    # Length check
+    # -------------------------------------------------------
 
     if len(text) > MAX_TEXT_LENGTH:
 
         await update.message.reply_text(
-            "စာအရမ်းရှည်နေပါတယ်။\n"
-            "5000 characters အောက်နဲ့ ပြန်ပို့ပေးပါ။"
+            "❌ စာအရမ်းရှည်နေပါတယ်။\n\n"
+            "5000 characters အောက်နဲ့ "
+            "ခွဲပြီး ပို့ပေးပါ။"
         )
 
         return
 
-    # =====================================================
-    # PROCESSING MESSAGE
-    # =====================================================
+    # -------------------------------------------------------
+    # Show processing message
+    # -------------------------------------------------------
 
     processing = await update.message.reply_text(
-        "⏳ ဘာသာပြန်နေပါတယ်..."
+        "⚡ ဘာသာပြန်နေပါတယ်..."
     )
 
     try:
 
-        # Gemini call in separate thread
+        # Gemini request runs outside Telegram event loop
         result = await asyncio.to_thread(
             gemini_translate,
-            text
+            text,
         )
 
-        # =================================================
-        # FINAL TELEGRAM MESSAGE
-        # =================================================
-
+        # Replace processing message
         await processing.edit_text(
             result
         )
@@ -603,7 +518,7 @@ async def translate_text(
 
         logger.exception(
             "Translation failed: %s",
-            error
+            error,
         )
 
         try:
@@ -621,7 +536,8 @@ async def translate_text(
 
 
 # =========================================================
-# RENDER HEALTH SERVER
+# HEALTH CHECK SERVER
+# Render အတွက်
 # =========================================================
 
 class HealthCheckHandler(
@@ -662,12 +578,12 @@ def run_health_server():
 
     server = HTTPServer(
         ("0.0.0.0", port),
-        HealthCheckHandler
+        HealthCheckHandler,
     )
 
     logger.info(
         "Health server running on port %s",
-        port
+        port,
     )
 
     server.serve_forever()
@@ -679,18 +595,16 @@ def run_health_server():
 
 def main():
 
-    # =====================================================
-    # ENVIRONMENT CHECK
-    # =====================================================
+    # -------------------------------------------------------
+    # Environment check
+    # -------------------------------------------------------
 
     if not TOKEN:
-
         raise RuntimeError(
             "TOKEN environment variable is missing"
         )
 
     if not GEMINI_API_KEY:
-
         raise RuntimeError(
             "GEMINI_API_KEY environment variable is missing"
         )
@@ -701,65 +615,52 @@ def main():
 
     logger.info(
         "Gemini model: %s",
-        MODEL
+        MODEL,
     )
 
-    # =====================================================
-    # HEALTH SERVER
-    # =====================================================
+    # -------------------------------------------------------
+    # Render health server
+    # -------------------------------------------------------
 
     health_thread = threading.Thread(
         target=run_health_server,
-        daemon=True
+        daemon=True,
     )
 
     health_thread.start()
 
-    # =====================================================
-    # TELEGRAM BOT
-    # =====================================================
+    # -------------------------------------------------------
+    # Telegram application
+    # -------------------------------------------------------
 
     app = (
         ApplicationBuilder()
         .token(TOKEN)
-
-        # Allow several users/messages to be processed
-        # without waiting for each other.
         .concurrent_updates(8)
-
         .build()
     )
 
-    # =====================================================
-    # COMMAND
-    # =====================================================
-
+    # Commands
     app.add_handler(
         CommandHandler(
             "start",
-            start
+            start,
         )
     )
 
-    # =====================================================
-    # TEXT
-    # =====================================================
-
+    # Text translation
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            translate_text
+            translate_text,
         )
     )
-
-    # =====================================================
-    # START
-    # =====================================================
 
     logger.info(
         "Telegram Translation Bot started"
     )
 
+    # Start bot
     app.run_polling(
         drop_pending_updates=True
     )
