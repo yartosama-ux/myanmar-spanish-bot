@@ -1,2 +1,2 @@
 python-telegram-bot
-googletrans==3.1.0a0
+requests
