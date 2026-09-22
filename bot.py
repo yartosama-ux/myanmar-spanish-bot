@@ -69,6 +69,7 @@ session.mount("https://", adapter)
 # =========================================================
 
 def detect_language(text: str) -> str:
+    text_lower = text.lower()
 
     # Myanmar
     if any("\u1000" <= char <= "\u109f" for char in text):
@@ -90,56 +91,25 @@ def detect_language(text: str) -> str:
     if any(char in spanish_chars for char in text):
         return "spanish"
 
-    # Common Spanish words
-    spanish_words = {
-        "que",
-        "para",
-        "como",
-        "por",
-        "una",
-        "uno",
-        "los",
-        "las",
-        "del",
-        "con",
-        "esta",
-        "está",
-        "tengo",
-        "quiero",
-        "puedo",
-        "dinero",
-        "porque",
-        "pero",
-        "usted",
-        "ustedes",
-        "gracias",
-        "hola",
-        "también",
-        "tambien",
-        "esto",
-        "eso",
-        "cuando",
-        "cómo",
-        "dónde",
-        "donde",
-        "hacer",
-        "tiene",
-        "tienen",
-        "hay",
-        "muy",
-        "más",
-        "mas",
-        "necesito",
-        "quiero",
-        "puede",
+    # Common Spanish keywords checklist
+    spanish_keywords = {
+        "entiendo", "usted", "interpretó", "retirar", "saldo", "restante",
+        "embargo", "instrucción", "indicaba", "realizar", "nuevamente",
+        "antes", "pasar", "que", "para", "como", "por", "una", "uno",
+        "los", "las", "del", "con", "esta", "está", "tengo", "quiero",
+        "puedo", "dinero", "porque", "pero", "ustedes", "gracias", "hola",
+        "también", "tambien", "esto", "eso", "cuando", "cómo", "dónde",
+        "donde", "hacer", "tiene", "tienen", "hay", "muy", "más", "mas",
+        "necesito", "puede", "primer", "primero", "después", "despues",
+        "finalmente", "otorgar", "debía", "debia", "retiro"
     }
 
     words = {
-        word.lower().strip(".,!?¿¡:;")
-        for word in text.split()
+        word.strip(".,!?¿¡:;")
+        for word in text_lower.split()
     }
 
-    if words.intersection(spanish_words):
+    if words.intersection(spanish_keywords):
         return "spanish"
 
     # Default = English
@@ -156,17 +126,13 @@ def build_prompt(text: str, language: str) -> str:
     if language == "spanish":
 
         return f"""
-Translate this Spanish text into Burmese.
+Translate the following Spanish text into natural and accurate Burmese (Myanmar).
 
 Rules:
 - Preserve the exact meaning.
-- Be accurate and natural.
-- Do not add information.
-- Do not remove information.
-- Do not explain.
-- Do not summarize.
-- Keep names, numbers, dates and amounts unchanged.
+- Keep original numbers, amounts, dates, and formatting unchanged.
 - Return ONLY the Burmese translation.
+- Do not add explanations or notes.
 
 TEXT:
 {text}
@@ -181,11 +147,7 @@ Rules:
 - Sound like a professional manager communicating with a client or colleague.
 - Use natural, clear and professional Venezuelan Spanish.
 - Preserve the exact meaning and intention.
-- Stay close to the original.
-- Do not add information.
-- Do not remove information.
-- Do not explain.
-- Do not summarize.
+- Do not add or remove information.
 - Keep names, numbers, dates and amounts unchanged.
 - Return ONLY the Spanish translation.
 
@@ -214,7 +176,6 @@ def gemini_translate(text: str) -> str:
         "Content-Type": "application/json",
     }
 
-    # Thinking Config ကို ပယ်ဖျက်ပြီး Speed မြင့်မားစေရန် Temperature ပြင်ဆင်ထားပါသည်
     data = {
         "contents": [
             {
@@ -230,10 +191,6 @@ def gemini_translate(text: str) -> str:
             "temperature": 0.2
         }
     }
-
-    # -----------------------------------------------------
-    # RETRY SETTINGS
-    # -----------------------------------------------------
 
     max_attempts = 4
 
@@ -281,10 +238,7 @@ def gemini_translate(text: str) -> str:
                 attempt,
             )
 
-            # =================================================
             # SUCCESS
-            # =================================================
-
             if status == 200:
 
                 result = response.json()
@@ -316,10 +270,7 @@ def gemini_translate(text: str) -> str:
 
                 return answer
 
-            # =================================================
             # TEMPORARY ERROR
-            # =================================================
-
             if status in retry_statuses:
 
                 if attempt < max_attempts:
@@ -337,10 +288,7 @@ def gemini_translate(text: str) -> str:
                     time.sleep(delay)
                     continue
 
-            # =================================================
-            # PERMANENT / OTHER ERROR
-            # =================================================
-
+            # PERMANENT ERROR
             try:
                 error_data = response.json()
                 logger.error("Gemini API error: %s", error_data)
@@ -349,10 +297,7 @@ def gemini_translate(text: str) -> str:
 
             raise RuntimeError(f"Gemini API error {status}")
 
-        # =====================================================
         # TIMEOUT
-        # =====================================================
-
         except requests.exceptions.Timeout as error:
 
             elapsed = round(time.perf_counter() - request_start, 2)
@@ -377,10 +322,7 @@ def gemini_translate(text: str) -> str:
 
             raise RuntimeError("Gemini response timeout")
 
-        # =====================================================
         # CONNECTION ERROR
-        # =====================================================
-
         except requests.exceptions.ConnectionError as error:
 
             logger.warning(
@@ -400,10 +342,7 @@ def gemini_translate(text: str) -> str:
 
             raise RuntimeError("Gemini connection failed")
 
-        # =====================================================
         # OTHER REQUEST ERROR
-        # =====================================================
-
         except requests.exceptions.RequestException as error:
 
             logger.exception("Gemini request error: %s", error)
@@ -468,10 +407,7 @@ async def translate_text(
     if not text:
         return
 
-    # -----------------------------------------------------
     # LENGTH CHECK
-    # -----------------------------------------------------
-
     if len(text) > MAX_TEXT_LENGTH:
 
         await update.message.reply_text(
@@ -482,33 +418,19 @@ async def translate_text(
 
         return
 
-    # -----------------------------------------------------
-    # START TIMER
-    # -----------------------------------------------------
-
     total_start = time.perf_counter()
-
-    # -----------------------------------------------------
-    # PROCESSING MESSAGE
-    # -----------------------------------------------------
 
     processing = await update.message.reply_text("⚡ ဘာသာပြန်နေပါတယ်...")
 
     try:
 
-        # -------------------------------------------------
-        # GEMINI
-        # -------------------------------------------------
-
+        # GEMINI TRANSLATION
         result = await asyncio.to_thread(
             gemini_translate,
             text,
         )
 
-        # -------------------------------------------------
         # TELEGRAM RESPONSE
-        # -------------------------------------------------
-
         await processing.edit_text(result)
 
         total_time = round(time.perf_counter() - total_start, 2)
@@ -606,10 +528,7 @@ def main():
         MODEL,
     )
 
-    # -----------------------------------------------------
     # RENDER HEALTH SERVER
-    # -----------------------------------------------------
-
     health_thread = threading.Thread(
         target=run_health_server,
         daemon=True,
@@ -617,10 +536,7 @@ def main():
 
     health_thread.start()
 
-    # -----------------------------------------------------
     # TELEGRAM APP
-    # -----------------------------------------------------
-
     app = (
         ApplicationBuilder()
         .token(TOKEN)
@@ -646,10 +562,7 @@ def main():
 
     logger.info("Telegram Translation Bot started")
 
-    # -----------------------------------------------------
     # START POLLING
-    # -----------------------------------------------------
-
     app.run_polling(drop_pending_updates=True)
 
 
