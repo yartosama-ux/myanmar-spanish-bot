@@ -1,8 +1,8 @@
-import os
 import logging
+import os
+import requests
 import asyncio
 import threading
-import requests
 
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
@@ -11,511 +11,306 @@ from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
-    ContextTypes,
     filters,
+    ContextTypes,
 )
 
 
-# ============================================================
+# =========================
 # CONFIG
-# ============================================================
+# =========================
 
 TOKEN = os.getenv("TOKEN")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-luna")
-
-OPENAI_URL = "https://api.openai.com/v1/responses"
+MODEL = "gemini-3.5-flash"
 
 MAX_TEXT_LENGTH = 5000
 
+GEMINI_URL = (
+    f"https://generativelanguage.googleapis.com/v1beta/"
+    f"models/{MODEL}:generateContent"
+)
 
-# ============================================================
+
+# =========================
 # LOGGING
-# ============================================================
+# =========================
 
 logging.basicConfig(
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-    level=logging.INFO,
+    format="%(asctime)s | %(name)s | %(levelname)s | %(message)s",
+    level=logging.INFO
 )
 
 logger = logging.getLogger("translation_bot")
 
 
-# ============================================================
-# CHECK ENVIRONMENT
-# ============================================================
+# =========================
+# GEMINI TRANSLATION
+# =========================
 
-if not TOKEN:
-    raise RuntimeError("TOKEN is not configured.")
-
-if not OPENAI_API_KEY:
-    raise RuntimeError("OPENAI_API_KEY is not configured.")
-
-
-# ============================================================
-# LANGUAGE DETECTION
-# ============================================================
-
-def detect_language(text: str) -> str:
-
-    # Myanmar
-    if any("\u1000" <= c <= "\u109F" for c in text):
-        return "my"
-
-    # Spanish characters
-    if any(c in text for c in "áéíóúüñÁÉÍÓÚÜÑ¿¡"):
-        return "es"
-
-    # Common Spanish words
-    spanish_words = {
-        "que",
-        "para",
-        "porque",
-        "como",
-        "cuando",
-        "donde",
-        "tengo",
-        "tiene",
-        "quiero",
-        "puedo",
-        "puede",
-        "está",
-        "estoy",
-        "esta",
-        "gracias",
-        "buenos",
-        "buenas",
-        "dinero",
-        "trabajo",
-        "persona",
-        "usted",
-        "ustedes",
-    }
-
-    words = set(text.lower().split())
-
-    if words.intersection(spanish_words):
-        return "es"
-
-    return "en"
-
-
-# ============================================================
-# OPENAI TRANSLATION
-# ============================================================
-
-def openai_translate(
-    text: str,
-    target_language: str,
-    style: str = "normal",
-) -> str:
-
-    if not text.strip():
-        return ""
-
-    if target_language == "Venezuelan Spanish":
-
-        instructions = """
-You are a professional Venezuelan Spanish translator.
-
-Translate the user's text into natural Venezuelan Spanish.
-
-STRICT RULES:
-- Preserve the original meaning exactly.
-- Do not rewrite the message.
-- Do not summarize.
-- Do not add information.
-- Do not remove information.
-- Do not change names.
-- Do not change numbers.
-- Do not change dates.
-- Do not change money amounts.
-- Do not change usernames, URLs or codes.
-- Preserve the original tone and intention.
-- Use natural Venezuelan Spanish.
-- Avoid unnecessary slang.
-- For business/work messages, use professional and clear Venezuelan Spanish.
-- Return ONLY the translation.
-"""
-
-    elif target_language == "Burmese":
-
-        instructions = """
-You are a professional Burmese translator.
-
-Translate the user's text into clear, natural Burmese.
-
-STRICT RULES:
-- Preserve the original meaning exactly.
-- Do not rewrite the message.
-- Do not summarize.
-- Do not add information.
-- Do not remove information.
-- Do not change names.
-- Do not change numbers.
-- Do not change dates.
-- Do not change money amounts.
-- Preserve URLs and usernames.
-- Keep the translation concise and easy to understand.
-- Return ONLY the translation.
-"""
-
-    elif target_language == "English":
-
-        instructions = """
-You are a professional English translator.
-
-Translate the user's text into clear, natural English.
-
-STRICT RULES:
-- Preserve the original meaning exactly.
-- Do not rewrite.
-- Do not summarize.
-- Do not add information.
-- Do not remove information.
-- Preserve names, numbers, dates, amounts and URLs.
-- Return ONLY the translation.
-"""
-
-    else:
-        raise ValueError("Unsupported target language.")
-
-    payload = {
-        "model": MODEL,
-        "instructions": instructions,
-        "input": text,
-        "max_output_tokens": 2000,
-    }
+def gemini_translate(text, instruction):
 
     headers = {
-        "Authorization": f"Bearer {OPENAI_API_KEY}",
-        "Content-Type": "application/json",
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json"
+    }
+
+    prompt = f"""
+{instruction}
+
+Text to translate:
+
+{text}
+"""
+
+    data = {
+        "contents": [
+            {
+                "parts": [
+                    {
+                        "text": prompt
+                    }
+                ]
+            }
+        ]
     }
 
     response = requests.post(
-        OPENAI_URL,
+        GEMINI_URL,
         headers=headers,
-        json=payload,
-        timeout=60,
+        json=data,
+        timeout=60
     )
 
     if response.status_code != 200:
-
         logger.error(
-            "OpenAI API %s: %s",
+            "Gemini API error %s: %s",
             response.status_code,
-            response.text[:1000],
+            response.text
         )
 
         raise RuntimeError(
-            f"OpenAI API error: {response.status_code}"
+            f"Gemini API error: {response.status_code}"
         )
 
-    data = response.json()
+    result = response.json()
 
-    result = data.get("output_text")
+    try:
+        return result["candidates"][0]["content"]["parts"][0]["text"].strip()
 
-    if not result:
-        logger.error("No output_text returned: %s", data)
-        raise RuntimeError("Empty translation returned.")
-
-    return result.strip()
+    except (KeyError, IndexError):
+        logger.error("Unexpected Gemini response: %s", result)
+        raise RuntimeError("Gemini returned an unexpected response.")
 
 
-# ============================================================
-# TRANSLATION FUNCTIONS
-# ============================================================
+# =========================
+# LANGUAGE DETECTION
+# =========================
 
-def to_spanish(text: str) -> str:
+def is_myanmar(text):
 
-    return openai_translate(
-        text,
-        "Venezuelan Spanish",
+    return any(
+        "\u1000" <= char <= "\u109f"
+        for char in text
     )
 
 
-def to_myanmar(text: str) -> str:
+# =========================
+# START COMMAND
+# =========================
 
-    return openai_translate(
-        text,
-        "Burmese",
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
+    await update.message.reply_text(
+        "မင်္ဂလာပါ။ Telegram Translate Bot မှ ကြိုဆိုပါတယ်။\n\n"
+        "မြန်မာစာ ပို့ပါက → Spanish + English ဘာသာပြန်ပေးပါမည်။\n"
+        "Spanish/English ပို့ပါက → Spanish + မြန်မာဘာသာ ပြန်ပေးပါမည်။"
     )
 
 
-def to_english(text: str) -> str:
+# =========================
+# TRANSLATION
+# =========================
 
-    return openai_translate(
-        text,
-        "English",
-    )
+async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
-
-# ============================================================
-# /START
-# ============================================================
-
-async def start(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    message = (
-        "မင်္ဂလာပါ 👋\n\n"
-        "Telegram Translation Bot မှ ကြိုဆိုပါတယ်။\n\n"
-        "🇲🇲 မြန်မာစာ\n"
-        "→ 🇻🇪 Venezuelan Spanish\n"
-        "→ 🇬🇧 English\n\n"
-        "🇪🇸 Spanish\n"
-        "→ 🇲🇲 မြန်မာဘာသာ\n\n"
-        "🇬🇧 English\n"
-        "→ 🇪🇸 Spanish\n"
-        "→ 🇲🇲 မြန်မာဘာသာ\n\n"
-        "စာပို့လိုက်ပါ။ အလိုအလျောက် ဘာသာပြန်ပေးပါမယ်။"
-    )
-
-    await update.message.reply_text(message)
-
-
-# ============================================================
-# TRANSLATE MESSAGE
-# ============================================================
-
-async def translate_text(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    if not update.message:
-        return
-
-    text = (update.message.text or "").strip()
+    text = update.message.text.strip()
 
     if not text:
         return
 
-    # Prevent extremely large requests
     if len(text) > MAX_TEXT_LENGTH:
 
         await update.message.reply_text(
-            f"စာအရှည်က အများဆုံး {MAX_TEXT_LENGTH} characters "
-            "အထိသာ လက်ခံပါတယ်။"
+            "စာအရမ်းရှည်နေပါတယ်။ 5000 characters အောက်နဲ့ ပြန်ပို့ပေးပါ။"
         )
 
         return
 
-    # Temporary message
-    status_message = await update.message.reply_text(
-        "⏳ ဘာသာပြန်နေပါတယ်..."
-    )
-
     try:
 
-        language = detect_language(text)
+        if is_myanmar(text):
 
-        loop = asyncio.get_running_loop()
+            spanish_instruction = """
+Translate the Burmese text into professional,
+formal Venezuelan Spanish.
 
-        # ====================================================
-        # MYANMAR
-        # ====================================================
+Preserve the original meaning and wording as closely
+as possible.
 
-        if language == "my":
+Do not rewrite, add information, or change the meaning.
+Return only the Spanish translation.
+"""
 
-            spanish_future = loop.run_in_executor(
-                None,
-                to_spanish,
+            english_instruction = """
+Translate the Burmese text into natural professional English.
+
+Preserve the original meaning as closely as possible.
+Do not add information or change the meaning.
+
+Return only the English translation.
+"""
+
+            spanish = await asyncio.to_thread(
+                gemini_translate,
                 text,
+                spanish_instruction
             )
 
-            english_future = loop.run_in_executor(
-                None,
-                to_english,
+            english = await asyncio.to_thread(
+                gemini_translate,
                 text,
-            )
-
-            spanish, english = await asyncio.gather(
-                spanish_future,
-                english_future,
+                english_instruction
             )
 
             result = (
-                "🇻🇪 Venezuelan Spanish\n"
-                "━━━━━━━━━━━━━━━━\n"
+                "🇻🇪 Spanish:\n"
                 f"{spanish}\n\n"
-                "🇬🇧 English\n"
-                "━━━━━━━━━━━━━━━━\n"
+                "🇬🇧 English:\n"
                 f"{english}"
             )
 
-        # ====================================================
-        # SPANISH
-        # ====================================================
-
-        elif language == "es":
-
-            myanmar = await loop.run_in_executor(
-                None,
-                to_myanmar,
-                text,
-            )
-
-            result = (
-                "🇲🇲 မြန်မာဘာသာပြန်\n"
-                "━━━━━━━━━━━━━━━━\n"
-                f"{myanmar}"
-            )
-
-        # ====================================================
-        # ENGLISH
-        # ====================================================
-
         else:
 
-            spanish_future = loop.run_in_executor(
-                None,
-                to_spanish,
+            spanish_instruction = """
+Translate the text into professional,
+formal Venezuelan Spanish.
+
+Preserve the original meaning and wording as closely
+as possible.
+
+Do not rewrite, add information, or change the meaning.
+
+Return only the Spanish translation.
+"""
+
+            myanmar_instruction = """
+Translate the text into concise, natural Burmese.
+
+Keep the translation to the point.
+Preserve the original meaning.
+Do not add unnecessary explanations.
+
+Return only the Burmese translation.
+"""
+
+            spanish = await asyncio.to_thread(
+                gemini_translate,
                 text,
+                spanish_instruction
             )
 
-            myanmar_future = loop.run_in_executor(
-                None,
-                to_myanmar,
+            myanmar = await asyncio.to_thread(
+                gemini_translate,
                 text,
-            )
-
-            spanish, myanmar = await asyncio.gather(
-                spanish_future,
-                myanmar_future,
+                myanmar_instruction
             )
 
             result = (
-                "🇻🇪 Spanish\n"
-                "━━━━━━━━━━━━━━━━\n"
+                "🇻🇪 Spanish:\n"
                 f"{spanish}\n\n"
-                "🇲🇲 မြန်မာဘာသာပြန်\n"
-                "━━━━━━━━━━━━━━━━\n"
+                "🇲🇲 မြန်မာ:\n"
                 f"{myanmar}"
             )
 
-        # Delete "translating..."
-        try:
-            await status_message.delete()
-        except Exception:
-            pass
-
-        # Telegram message limit protection
-        if len(result) <= 4000:
-
-            await update.message.reply_text(result)
-
-        else:
-
-            # Split long result
-            for i in range(0, len(result), 4000):
-
-                await update.message.reply_text(
-                    result[i:i + 4000]
-                )
+        await update.message.reply_text(result)
 
     except Exception as e:
 
-        logger.exception(
-            "Translation failed: %s",
-            e,
+        logger.exception("Translation failed")
+
+        await update.message.reply_text(
+            "ဘာသာပြန်ရာမှာ ပြဿနာတစ်ခု ဖြစ်သွားပါတယ်။ "
+            "ခဏနေရင် ပြန်စမ်းကြည့်ပါ။"
         )
 
-        try:
-            await status_message.edit_text(
-                "❌ ဘာသာပြန်ရာတွင် အမှားဖြစ်နေပါတယ်။ "
-                "ခဏအကြာတွင် ထပ်မံကြိုးစားပါ။"
-            )
-        except Exception:
-            pass
 
-
-# ============================================================
-# HEALTH CHECK FOR RENDER
-# ============================================================
+# =========================
+# HEALTH CHECK
+# =========================
 
 class HealthCheckHandler(BaseHTTPRequestHandler):
 
     def do_GET(self):
 
         self.send_response(200)
-
-        self.send_header(
-            "Content-Type",
-            "text/plain",
-        )
-
         self.end_headers()
-
         self.wfile.write(b"OK")
 
     def log_message(self, format, *args):
         return
 
 
-def run_health_server():
+def run_health_check_server():
 
-    port = int(
-        os.getenv("PORT", "10000")
-    )
+    port = int(os.getenv("PORT", 10000))
 
     server = HTTPServer(
         ("0.0.0.0", port),
-        HealthCheckHandler,
-    )
-
-    logger.info(
-        "Health server running on port %s",
-        port,
+        HealthCheckHandler
     )
 
     server.serve_forever()
 
 
-# ============================================================
+# =========================
 # MAIN
-# ============================================================
+# =========================
 
-def main():
+if __name__ == "__main__":
 
-    # Render health server
+    if not TOKEN:
+        raise RuntimeError("TOKEN is missing")
+
+    if not GEMINI_API_KEY:
+        raise RuntimeError("GEMINI_API_KEY is missing")
+
     threading.Thread(
-        target=run_health_server,
-        daemon=True,
+        target=run_health_check_server,
+        daemon=True
     ).start()
 
     app = (
         ApplicationBuilder()
         .token(TOKEN)
-        .concurrent_updates(True)
+        .job_queue(None)
         .build()
     )
 
     app.add_handler(
-        CommandHandler(
-            "start",
-            start,
-        )
+        CommandHandler("start", start)
     )
 
     app.add_handler(
         MessageHandler(
             filters.TEXT & ~filters.COMMAND,
-            translate_text,
+            translate_text
         )
     )
 
-    logger.info(
-        "Translation bot started."
-    )
+    print("Telegram translation bot is starting...")
 
     app.run_polling(
         drop_pending_updates=True
     )
-
-
-if __name__ == "__main__":
-    main()
